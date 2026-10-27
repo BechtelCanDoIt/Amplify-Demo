@@ -19,10 +19,14 @@
 #   Dockerfile path: marketing-tools/demo-docker/Dockerfile   Docker context: .
 #   docker build -f marketing-tools/demo-docker/Dockerfile -t amplify-demo .
 # Inside the container (entrypoint.sh starts them in this order):
-#   1. amplify-database  one-shot, migrations then seeds, must exit 0 or the container stops (skip: RUN_MIGRATIONS=false)
+#   0. postgres 18       127.0.0.1:5432, embedded, databases amplify + scheduler, EPHEMERAL (see below)
+#   1. amplify-database  one-shot, migrations then seeds, must exit 0 or the container stops
 #   2. scheduler         127.0.0.1:8080   (akorn/scheduler, needs DSN)
 #   3. amplify-jobs      127.0.0.1:9091
 #   4. amplify-api       0.0.0.0:9090     the ONLY endpoint Choreo exposes
+# Embedded database (demo only): a fresh Postgres cluster is created on every container start, so data does
+# NOT survive a restart or redeploy (the seed data is reloaded). All DB passwords are generated at start;
+# there is no DB config to set in Choreo. Replace with a managed Postgres before any real use.
 # Per-process config: the apps share env names (DBUSER, DBPASSWORD, ...) so each var is prefixed with its
 # process, e.g. API_BAL_CONFIG_VAR_DBPASSWORD, JOBS_BAL_CONFIG_VAR_DBPASSWORD, MIGRATE_BAL_CONFIG_VAR_DBUSER.
 # Unprefixed BAL_CONFIG_VAR_* apply to all processes (DBHOST, DBNAME, DBSSLMODE ...).
@@ -59,10 +63,11 @@ RUN set -e \
 FROM akorn/scheduler:1.7.8@sha256:07462c0684245d5f8aaed8018e4594da3ba113d5b38bb6dffcc32403108d2cf6 AS scheduler
 
 FROM eclipse-temurin:21-jre-alpine@sha256:51ab5e3302e7141ce665ca3ea85e8b5cd648eafbc3c0c90dd79d6537684e4555
-# psql is only for the scheduler job_history retention trigger.
+# Embedded Postgres 18 (native uuidv7(); contrib = citext, pg_trgm). psql also runs the scheduler retention SQL.
 RUN apk upgrade --no-cache \
- && apk add --no-cache postgresql-client \
+ && apk add --no-cache postgresql18 postgresql18-contrib postgresql18-client \
  && addgroup -g 10014 choreo && adduser -D -H -u 10014 -G choreo choreouser
+RUN mkdir /pgdata && chown 10014:10014 /pgdata && chmod 700 /pgdata
 WORKDIR /app
 COPY --from=scheduler /scheduler /app/scheduler
 COPY --from=build /out/api.jar /out/jobs.jar /out/migrate.jar /app/

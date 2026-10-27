@@ -17,6 +17,7 @@
 # Amplify demo (all components in one image). Choreo Service, Dockerfile buildpack.
 # Docker context: . (repo root)  |  Dockerfile: marketing-tools/demo-docker/Dockerfile
 # Choreo reads this file from <docker context>/.choreo/component.yaml.
+# Database: embedded Postgres inside the image (ephemeral, demo only), so there are no DB fields here.
 # Only amplify-api (9090) is exposed; scheduler and jobs stay inside the container (loopback, no connections).
 # LinkedIn is the real one: no mock, no base-URL overrides.
 # Env convention (see demo-docker/entrypoint.sh): unprefixed BAL_CONFIG_VAR_* reach every process;
@@ -34,85 +35,7 @@ endpoints:
     schemaFilePath: marketing-tools/apps/amplify/amplify-api/openapi.yaml
 configurations:
   env:
-    # --- Run switch ---
-    - name: RUN_MIGRATIONS
-      valueFrom:
-        configForm:
-          displayName: Run DB migrate + seed on start (true/false)
-          type: string
-          required: false
-    # --- Shared by every process ---
-    - name: BAL_CONFIG_VAR_DBHOST
-      valueFrom:
-        configForm:
-          displayName: DB host
-          type: string
-    - name: BAL_CONFIG_VAR_DBPORT
-      valueFrom:
-        configForm:
-          displayName: DB port
-          type: number
-    - name: BAL_CONFIG_VAR_DBNAME
-      valueFrom:
-        configForm:
-          displayName: DB name
-          type: string
-    - name: BAL_CONFIG_VAR_DBSSLMODE
-      valueFrom:
-        configForm:
-          displayName: DB SSL mode (default VERIFY_FULL needs the CA file)
-          type: string
-          required: false
-    - name: BAL_CONFIG_VAR_DBSSLROOTCERT
-      valueFrom:
-        configForm:
-          displayName: DB CA certificate file path (file mount)
-          type: string
-          required: false
-    # --- Migrate + seed (one-shot, runs first; needs a DB owner) ---
-    - name: MIGRATE_BAL_CONFIG_VAR_DBUSER
-      valueFrom:
-        configForm:
-          displayName: Migrate DB user
-          type: string
-    - name: MIGRATE_BAL_CONFIG_VAR_DBPASSWORD
-      valueFrom:
-        configForm:
-          displayName: Migrate DB password
-          type: secret
-    - name: MIGRATE_BAL_CONFIG_VAR_APIDBPASSWORD
-      valueFrom:
-        configForm:
-          displayName: Password to set for the API DB role
-          type: secret
-    - name: MIGRATE_BAL_CONFIG_VAR_JOBSDBPASSWORD
-      valueFrom:
-        configForm:
-          displayName: Password to set for the jobs DB role
-          type: secret
-    - name: MIGRATE_BAL_CONFIG_VAR_READONLYDBPASSWORD
-      valueFrom:
-        configForm:
-          displayName: Read-only DB role password
-          type: secret
-          required: false
-    # --- Scheduler (akorn/scheduler, its own database) ---
-    - name: DSN
-      valueFrom:
-        configForm:
-          displayName: Scheduler Postgres DSN
-          type: secret
     # --- amplify-api ---
-    - name: API_BAL_CONFIG_VAR_DBUSER
-      valueFrom:
-        configForm:
-          displayName: API DB user
-          type: string
-    - name: API_BAL_CONFIG_VAR_DBPASSWORD
-      valueFrom:
-        configForm:
-          displayName: API DB password
-          type: secret
     - name: API_BAL_CONFIG_VAR_ENVIRONMENT
       valueFrom:
         configForm:
@@ -153,21 +76,25 @@ configurations:
         configForm:
           displayName: People directory URL
           type: string
+          required: false
     - name: API_BAL_CONFIG_VAR_PEOPLEDIRECTORYTOKENURL
       valueFrom:
         configForm:
           displayName: People directory token URL
           type: string
+          required: false
     - name: API_BAL_CONFIG_VAR_PEOPLEDIRECTORYCLIENTID
       valueFrom:
         configForm:
           displayName: People directory client id
           type: string
+          required: false
     - name: API_BAL_CONFIG_VAR_CAMPAIGNLINKORIGINS
       valueFrom:
         configForm:
           displayName: Campaign link origins
           type: string
+          required: false
     - name: API_BAL_CONFIG_VAR_LINKEDINCLIENTSECRET
       valueFrom:
         configForm:
@@ -183,17 +110,8 @@ configurations:
         configForm:
           displayName: People directory client secret
           type: secret
+          required: false
     # --- amplify-jobs ---
-    - name: JOBS_BAL_CONFIG_VAR_DBUSER
-      valueFrom:
-        configForm:
-          displayName: Jobs DB user
-          type: string
-    - name: JOBS_BAL_CONFIG_VAR_DBPASSWORD
-      valueFrom:
-        configForm:
-          displayName: Jobs DB password
-          type: secret
     - name: JOBS_BAL_CONFIG_VAR_LINKEDINCLIENTID
       valueFrom:
         configForm:

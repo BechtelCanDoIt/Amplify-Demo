@@ -35,20 +35,45 @@ JAVA="java -XX:MaxRAMPercentage=25 -XX:+ExitOnOutOfMemoryError"
 
 # Same-container wiring. The API calls jobs and the scheduler over loopback; the scheduler calls jobs back.
 # Exported here (not in Choreo config) so no connections are needed; an explicit Choreo value still wins.
-export BAL_CONFIG_VAR_JOBSURL="${BAL_CONFIG_VAR_JOBSURL:-http://127.0.0.1:9091}"
-export BAL_CONFIG_VAR_SCHEDULERURL="${BAL_CONFIG_VAR_SCHEDULERURL:-http://127.0.0.1:8080}"
-export BAL_CONFIG_VAR_SCHEDULERJOBSURL="${BAL_CONFIG_VAR_SCHEDULERJOBSURL:-http://127.0.0.1:9091}"
+# Prefixed API_ on purpose: Ballerina fails on BAL_CONFIG_VAR_* names a program does not declare.
+export API_BAL_CONFIG_VAR_JOBSURL="${API_BAL_CONFIG_VAR_JOBSURL:-http://127.0.0.1:9091}"
+export API_BAL_CONFIG_VAR_SCHEDULERURL="${API_BAL_CONFIG_VAR_SCHEDULERURL:-http://127.0.0.1:8080}"
+export API_BAL_CONFIG_VAR_SCHEDULERJOBSURL="${API_BAL_CONFIG_VAR_SCHEDULERJOBSURL:-http://127.0.0.1:9091}"
 
-# Migrations and seeds are idempotent. Turn this off once the schema is in place so the admin DB
-# credentials (MIGRATE_*) can be removed from the running component.
-if [ "${RUN_MIGRATIONS:-true}" = "true" ]; then
-  echo "[demo] database migrate + seed"
-  with_prefix MIGRATE $JAVA -jar migrate.jar
-else
-  echo "[demo] RUN_MIGRATIONS=false, skipping migrate + seed"
-fi
+# ---- Embedded Postgres (ephemeral: a new cluster on every start) ----------------------------------------
+PGDATA=/pgdata
+rand() { head -c 24 /dev/urandom | base64 | tr -d '/+=\n'; }
+PG_ADMIN_PW=$(rand); API_DB_PW=$(rand); JOBS_DB_PW=$(rand); SCHED_DB_PW=$(rand)
 
-PIDS=""
+echo "[demo] initialising embedded postgres"
+rm -rf "${PGDATA:?}"/* 2>/dev/null || true
+printf '%s' "$PG_ADMIN_PW" > /tmp/pgpw
+initdb -D "$PGDATA" -U postgres --pwfile=/tmp/pgpw --auth=scram-sha-256 \
+  --encoding=UTF8 --locale=C.UTF-8 >/dev/null
+rm -f /tmp/pgpw
+postgres -D "$PGDATA" -c listen_addresses=127.0.0.1 -c unix_socket_directories=/tmp \
+  -c max_connections=100 -c shared_buffers=128MB &
+PG_PID=$!
+for i in $(seq 1 60); do pg_isready -q -h 127.0.0.1 -p 5432 && break; sleep 1; done
+pg_isready -q -h 127.0.0.1 -p 5432 || { echo "[demo] postgres did not start"; exit 1; }
+PGPASSWORD=$PG_ADMIN_PW psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -q <<SQL
+CREATE DATABASE amplify;
+CREATE ROLE scheduler LOGIN PASSWORD '$SCHED_DB_PW';
+CREATE DATABASE scheduler OWNER scheduler;
+SQL
+
+# Every app talks to it over loopback, no TLS. Roles amplify_api / amplify_jobs are created by the migration.
+export BAL_CONFIG_VAR_DBHOST=127.0.0.1 BAL_CONFIG_VAR_DBPORT=5432 BAL_CONFIG_VAR_DBNAME=amplify
+export BAL_CONFIG_VAR_DBSSLMODE=DISABLE
+export MIGRATE_BAL_CONFIG_VAR_DBUSER=postgres MIGRATE_BAL_CONFIG_VAR_DBPASSWORD=$PG_ADMIN_PW
+export MIGRATE_BAL_CONFIG_VAR_APIDBPASSWORD=$API_DB_PW MIGRATE_BAL_CONFIG_VAR_JOBSDBPASSWORD=$JOBS_DB_PW
+export API_BAL_CONFIG_VAR_DBPASSWORD=$API_DB_PW JOBS_BAL_CONFIG_VAR_DBPASSWORD=$JOBS_DB_PW
+export DSN="postgres://scheduler:${SCHED_DB_PW}@127.0.0.1:5432/scheduler?sslmode=disable"
+
+echo "[demo] database migrate + seed"
+with_prefix MIGRATE $JAVA -jar migrate.jar
+
+PIDS="$PG_PID"
 start() { # name prefix cmd...
   n=$1; p=$2; shift 2
   echo "[demo] starting $n"
