@@ -60,7 +60,8 @@ FROM akorn/scheduler:1.7.8@sha256:07462c0684245d5f8aaed8018e4594da3ba113d5b38bb6
 
 FROM eclipse-temurin:21-jre-alpine@sha256:51ab5e3302e7141ce665ca3ea85e8b5cd648eafbc3c0c90dd79d6537684e4555
 # psql is only for the scheduler job_history retention trigger.
-RUN apk add --no-cache postgresql-client \
+RUN apk upgrade --no-cache \
+ && apk add --no-cache postgresql-client \
  && addgroup -g 10014 choreo && adduser -D -H -u 10014 -G choreo choreouser
 WORKDIR /app
 COPY --from=scheduler /scheduler /app/scheduler
