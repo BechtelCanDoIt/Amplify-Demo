@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "input=$(cat); file=$(echo \"$input\" | jq -r '.file_path // \"\"'); if [[ \"$file\" == *\"people_app_table_update_\"* ]] && [[ \"$file\" == *\".sql\" ]]; then echo \"REMINDER: Migration file modified — make sure people_app_creation.sql is updated to stay in sync.\"; fi"
+          }
+        ]
+      }
+    ]
+  }
+}

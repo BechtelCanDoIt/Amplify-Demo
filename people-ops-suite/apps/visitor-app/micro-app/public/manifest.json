@@ -1,0 +1,16 @@
+{
+    "short_name": "Visitor App",
+    "name": "Visitor Micro App",
+    "icons": [
+        {
+            "src": "favicon.svg",
+            "sizes": "any",
+            "type": "image/svg+xml",
+            "purpose": "any maskable"
+        }
+    ],
+    "start_url": ".",
+    "display": "standalone",
+    "theme_color": "#FF7300",
+    "background_color": "#ffffff"
+}

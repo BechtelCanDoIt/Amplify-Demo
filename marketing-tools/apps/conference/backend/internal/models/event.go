@@ -1,0 +1,62 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+package models
+
+// Event represents a single conference, as returned by GET /events. The old
+// Ballerina schema's `event` had a `location` column; the new
+// conference_config table has no equivalent, so it's dropped (see
+// .claude/PLAN.md). IsCurrent is computed as the config with the latest
+// start_date, not a stored column. Timezone/VenueName/VenueAddress come from
+// the real upstream conference_config columns (added by the schema-owning
+// team). Timezone is the IANA venue timezone the nested session instants are
+// expressed in, so the client reads it from the payload instead of hardcoding
+// its own (see .claude/PLAN.md Phase A/G). VenueName/VenueAddress are omitted
+// when unset.
+//
+// StartDate/EndDate bound the conference as YYYY-MM-DD venue-local dates, both
+// inclusive, so a client can label an event ("Sep 1-3, 2026") or tell whether
+// one is over without first fetching its agenda. StartDate is
+// conference_config.start_date -- the same column the IsCurrent rule sorts on,
+// so the two cannot disagree. There is no matching end_date column upstream, so
+// EndDate is derived from the conference's days: the last conference_days.date,
+// or StartDate for a config whose days are not entered yet. Both are always
+// present; a one-day conference reports the same date twice.
+type Event struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	IsCurrent    bool   `json:"isCurrent"`
+	Timezone     string `json:"timezone"`
+	StartDate    string `json:"startDate"`
+	EndDate      string `json:"endDate"`
+	VenueName    string `json:"venueName,omitempty"`
+	VenueAddress string `json:"venueAddress,omitempty"`
+}
+
+// EventAgenda represents a single conference day and its scheduled sessions,
+// as returned by GET /events/:eventId/agendas and GET /event-agendas. Maps to
+// the old Ballerina `AgendaInfo` (backed by the `agenda` table), now backed by
+// conference_days. Sessions reuse the bare Session type as-is -- no
+// location/venue/sessionSpeakers/sessionSponsors embeds, per user decision
+// 2026-07-20 (see .claude/PLAN.md).
+type EventAgenda struct {
+	ID       string    `json:"id"`
+	EventID  string    `json:"eventId"`
+	Timezone string    `json:"timezone"`
+	Name     string    `json:"name,omitempty"`
+	Date     string    `json:"date"`
+	Sessions []Session `json:"sessions"`
+}

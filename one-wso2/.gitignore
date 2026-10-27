@@ -1,0 +1,13 @@
+# Logs
+*.log
+
+# Archives
+*.zip
+*.tar.gz
+*.rar
+
+# Local working notes — never committed.
+My Findings*.md
+
+# OS
+.DS_Store

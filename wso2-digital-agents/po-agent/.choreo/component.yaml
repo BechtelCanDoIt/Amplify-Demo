@@ -1,0 +1,11 @@
+schemaVersion: "1.2"
+endpoints:
+  - name: wso2-digital-assistant
+    displayName: Novera
+    service:
+      basePath: /
+      port: 3000
+    type: REST
+    networkVisibilities:
+      - Public
+    schemaFilePath: .choreo/openapi.yaml

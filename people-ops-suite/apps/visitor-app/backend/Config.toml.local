@@ -1,0 +1,72 @@
+[visitor]
+webAppUrl = ""
+
+[visitor.authorization]
+receptionUserEmails = [""]
+
+[visitor.authorization.authorizedRoles]
+ADMIN_ROLE = ""
+EMPLOYEE_ROLE = [""]
+EXTERNAL_USER_ROLE = ""
+
+[visitor.database]
+encryptionKey = ""
+
+[visitor.database.dbConfig]
+database = ""
+host = ""
+password = ""
+port = 3306
+user = ""
+
+[visitor.database.dbConfig.connectionPool]
+maxConnectionLifeTime = 100.0
+maxOpenConnections = 10
+minIdleConnections = 3
+
+[visitor.database.dbConfig.options]
+connectTimeout = 10.0
+
+[visitor.database.dbConfig.options.ssl]
+mode = "REQUIRED"
+
+[visitor.people]
+peopleEndpoint = ""
+
+[visitor.people.clientAuthConfig]
+clientId = ""
+clientSecret = ""
+tokenUrl = ""
+
+[visitor.email]
+contactUsEmail = ""
+emailServiceEndpoint = ""
+fromEmailAddress = ""
+receptionEmail = ""
+
+[visitor.email.clientAuthConfig]
+clientId = ""
+clientSecret = ""
+tokenUrl = ""
+
+[visitor.sms]
+smsServiceEndpoint = ""
+
+[visitor.sms.clientAuthConfig]
+clientId = ""
+clientSecret = ""
+tokenUrl = ""
+
+[visitor.calendar]
+calendarBaseUrl = ""
+
+[visitor.calendar.oauthConfig]
+clientId = ""
+clientSecret = ""
+tokenUrl = ""
+
+[visitor.calendar.retryConfig]
+backOffFactor = 2.0
+count = 3
+interval = 3.0
+maxWaitInterval = 20.0

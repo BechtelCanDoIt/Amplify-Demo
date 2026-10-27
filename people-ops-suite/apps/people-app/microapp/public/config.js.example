@@ -1,0 +1,8 @@
+window.config = {
+  CLIENT_ID: "",
+  SIGN_IN_REDIRECT_URL: "",
+  SIGN_OUT_REDIRECT_URL: "",
+  ASGARDEO_BASE_URL: "",
+  IS_MICROAPP: true,
+  BACKEND_BASE_URL: "",
+};

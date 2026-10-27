@@ -1,0 +1,107 @@
+openapi: "3.0.0"
+info:
+  title: Novera
+  version: "1.0"
+paths:
+  /webhook:
+    post:
+      summary: Google Chat webhook
+      security: []        # No gateway auth — Google Chat cannot provide a subscription token.
+      responses:
+        "200":
+          description: OK
+  /auth/callback:
+    get:
+      summary: Asgardeo OAuth2 callback
+      security: []        # No gateway auth — redirect from Asgardeo browser flow.
+      responses:
+        "200":
+          description: OK
+  /health:
+    get:
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: OK
+  /internal/notifications:
+    post:
+      summary: Send a notification card to everyone who has added Novera, in their DM with it
+      # Gateway-enforced subscription auth (default security scheme for this
+      # API) -- callers present a client_credentials access token from their
+      # own Choreo-registered Application. No per-operation override:
+      # unlike /webhook and /auth/callback, a caller CAN carry a Choreo
+      # subscription token, so there's no need for an application-level
+      # secret on top of it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [source, title, body]
+              properties:
+                source:
+                  type: string
+                  pattern: "^[a-z0-9-]{1,40}$"
+                  description: The calling service, e.g. "til". Used in logs.
+                title:
+                  type: string
+                  maxLength: 300
+                  description: Shown in bold, in full.
+                subtitle:
+                  type: string
+                  maxLength: 300
+                  description: One grey line under the title, shortened to about 36 characters.
+                body:
+                  type: string
+                  maxLength: 5000
+                  description: Plain text, shortened to about 3 lines.
+                link:
+                  type: object
+                  additionalProperties: false
+                  required: [url, label]
+                  properties:
+                    url:
+                      type: string
+                      maxLength: 2000
+                      description: An http or https URL.
+                    label:
+                      type: string
+                      maxLength: 40
+                      description: Shown as "…label" after the body.
+                footer:
+                  type: string
+                  maxLength: 300
+                  description: A grey line at the bottom of the card.
+                iconUrl:
+                  type: string
+                  maxLength: 2000
+                  description: An https URL of a PNG or JPEG that loads without signing in, shown beside the title.
+                imageUrl:
+                  type: string
+                  maxLength: 2000
+                  description: An https URL of a PNG or JPEG that loads without signing in, shown full width under the title. Chat fetches it, so it must be public.
+                button:
+                  type: object
+                  additionalProperties: false
+                  required: [url, label]
+                  properties:
+                    url:
+                      type: string
+                      maxLength: 2000
+                      description: An http or https URL.
+                    label:
+                      type: string
+                      maxLength: 40
+                      description: The button's text.
+      responses:
+        "202":
+          description: Accepted (broadcast runs asynchronously after the response)
+        "400":
+          description: The notification isn't valid; the error says why
+        "401":
+          description: Missing or invalid gateway access token
+        "503":
+          description: Novera can't call Google Chat right now (e.g. no Google access token), so nothing was sent; the caller may try again later

@@ -1,0 +1,1160 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+package config
+
+import (
+	"os"
+	"strings"
+	"testing"
+	"time"
+)
+
+func clearEnv(t *testing.T) {
+	t.Helper()
+	keys := []string{
+		"DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_NAME", "DB_SCHEMA", "DB_SSLMODE",
+		"PORT", "LOG_LEVEL", "APP_ENV",
+		"TOKEN_VALIDATOR_ENABLED", "JWKS_ENDPOINT", "JWT_ISSUER", "JWT_AUDIENCE", "RBAC_ADMIN_ROLES", "AI_ADMIN_ROLES", "NOTIFICATION_ADMIN_ROLES",
+		"EXCLUDE_EMPLOYEE_COIN_ALLOCATION", "ENABLE_QR_VALIDATIONS", "SESSION_END_TIME_OFFSET_MINUTES", "SESSION_SLOT_MINUTES",
+		"QR_PORTAL_ENDPOINT", "QR_PORTAL_TOKEN_URL", "QR_PORTAL_CLIENT_ID", "QR_PORTAL_CLIENT_SECRET",
+		"WALLET_ENDPOINT", "WALLET_TOKEN_URL", "WALLET_CLIENT_ID", "WALLET_CLIENT_SECRET",
+		"TRANSACTION_ENDPOINT", "TRANSACTION_TOKEN_URL", "TRANSACTION_CLIENT_ID", "TRANSACTION_CLIENT_SECRET",
+		"NOTIFICATION_ENDPOINT", "NOTIFICATION_TOKEN_URL", "NOTIFICATION_CLIENT_ID", "NOTIFICATION_CLIENT_SECRET", "NOTIFICATION_SCOPES",
+		"PII_ENCRYPTION_KEY", "SHOP_MASTER_WALLET_ADDRESS",
+		"AI_SERVICE_URL", "AI_TOKEN_URL", "AI_CLIENT_ID", "AI_CLIENT_SECRET",
+		"AI_REQUEST_TIMEOUT_SECONDS",
+		"AI_ENABLED_CHAT_ASSISTANT", "AI_ENABLED_PERSONALIZED_AGENDA", "AI_ENABLED_MATCH_MAKER", "AI_ENABLED_O2_BAR",
+		"VENUE_TIMEZONE",
+		"MOESIF_ENABLED", "MOESIF_APPLICATION_ID", "MOESIF_API_ENDPOINT", "MOESIF_PROJECT_NAME", "MOESIF_APP_NAME",
+	}
+	for _, k := range keys {
+		t.Setenv(k, "")
+		os.Unsetenv(k)
+	}
+}
+
+func TestLoad_Defaults(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "administrator")
+	t.Setenv("DB_NAME", "agenda_organizer")
+	t.Setenv("DB_SCHEMA", "marketingops")
+	t.Setenv("APP_ENV", "development")
+
+	cfg := Load()
+
+	if cfg.Port != "8080" {
+		t.Errorf("expected default Port 8080, got %q", cfg.Port)
+	}
+	if cfg.DBPort != "5432" {
+		t.Errorf("expected default DBPort 5432, got %q", cfg.DBPort)
+	}
+	if cfg.DBSSLMode != "require" {
+		t.Errorf("expected default DBSSLMode require, got %q", cfg.DBSSLMode)
+	}
+	if cfg.LogLevel != "info" {
+		t.Errorf("expected default LogLevel info, got %q", cfg.LogLevel)
+	}
+	if cfg.ExcludeEmployeeCoinAllocation != true {
+		t.Errorf("expected ExcludeEmployeeCoinAllocation default true")
+	}
+	if cfg.EnableQrValidations != true {
+		t.Errorf("expected EnableQrValidations default true")
+	}
+	if cfg.SessionEndTimeOffsetMinutes != 15 {
+		t.Errorf("expected SessionEndTimeOffsetMinutes default 15, got %d", cfg.SessionEndTimeOffsetMinutes)
+	}
+	if cfg.SessionSlotMinutes != 5 {
+		t.Errorf("expected SessionSlotMinutes default 5, got %d", cfg.SessionSlotMinutes)
+	}
+}
+
+func TestLoad_VenueTimezoneDefaultsToUTC(t *testing.T) {
+	clearEnv(t)
+
+	cfg := Load()
+
+	if cfg.VenueTimezone != "UTC" {
+		t.Errorf("expected default VenueTimezone UTC, got %q", cfg.VenueTimezone)
+	}
+	if cfg.VenueLocation == nil {
+		t.Fatal("expected VenueLocation to be non-nil")
+	}
+	if _, offset := time.Now().In(cfg.VenueLocation).Zone(); offset != 0 {
+		t.Errorf("expected UTC offset 0, got %d", offset)
+	}
+}
+
+func TestLoad_VenueTimezoneFromEnv(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("VENUE_TIMEZONE", "Asia/Colombo")
+
+	cfg := Load()
+
+	if cfg.VenueTimezone != "Asia/Colombo" {
+		t.Errorf("VenueTimezone = %q, want Asia/Colombo", cfg.VenueTimezone)
+	}
+	if cfg.VenueLocation == nil {
+		t.Fatal("expected VenueLocation to be non-nil")
+	}
+	// Asia/Colombo is a fixed +05:30 (no DST): 5*3600 + 30*60 = 19800s.
+	if _, offset := time.Date(2026, 7, 1, 0, 0, 0, 0, cfg.VenueLocation).Zone(); offset != 19800 {
+		t.Errorf("Asia/Colombo offset = %d, want 19800", offset)
+	}
+}
+
+func TestValidate_RejectsInvalidVenueTimezone(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "administrator")
+	t.Setenv("DB_NAME", "agenda_organizer")
+	t.Setenv("DB_SCHEMA", "marketingops")
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("PII_ENCRYPTION_KEY", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=")
+	t.Setenv("REGISTRANT_SERVICE_URL", "https://registrant.example")
+	t.Setenv("VENUE_TIMEZONE", "Not/ARealZone")
+
+	cfg := Load()
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for an unloadable VENUE_TIMEZONE")
+	}
+	if !strings.Contains(err.Error(), "VENUE_TIMEZONE") {
+		t.Errorf("error = %q, want it to mention VENUE_TIMEZONE", err.Error())
+	}
+}
+
+func TestLoad_RBACAdminRolesParsedAsList(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("RBAC_ADMIN_ROLES", "event-admin-stg, event-admin-prod ,other")
+
+	cfg := Load()
+
+	want := []string{"event-admin-stg", "event-admin-prod", "other"}
+	if len(cfg.AdminRoles) != len(want) {
+		t.Fatalf("expected %d admin roles, got %d (%v)", len(want), len(cfg.AdminRoles), cfg.AdminRoles)
+	}
+	for i, w := range want {
+		if cfg.AdminRoles[i] != w {
+			t.Errorf("AdminRoles[%d] = %q, want %q", i, cfg.AdminRoles[i], w)
+		}
+	}
+}
+
+func TestLoad_AIAdminRolesParsedAsList(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("AI_ADMIN_ROLES", "o2bar-admin-stg, o2bar-admin-prod ,other")
+
+	cfg := Load()
+
+	want := []string{"o2bar-admin-stg", "o2bar-admin-prod", "other"}
+	if len(cfg.AIAdminRoles) != len(want) {
+		t.Fatalf("expected %d AI admin roles, got %d (%v)", len(want), len(cfg.AIAdminRoles), cfg.AIAdminRoles)
+	}
+	for i, w := range want {
+		if cfg.AIAdminRoles[i] != w {
+			t.Errorf("AIAdminRoles[%d] = %q, want %q", i, cfg.AIAdminRoles[i], w)
+		}
+	}
+}
+
+func TestLoad_AIAdminRolesUnsetIsNil(t *testing.T) {
+	clearEnv(t)
+
+	cfg := Load()
+
+	if cfg.AIAdminRoles != nil {
+		t.Errorf("expected AIAdminRoles nil when AI_ADMIN_ROLES unset, got %v", cfg.AIAdminRoles)
+	}
+}
+
+func TestLoad_NotificationAdminRolesParsedAsList(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("NOTIFICATION_ADMIN_ROLES", "app-push-notification-admin, push-admin-prod ,other")
+
+	cfg := Load()
+
+	want := []string{"app-push-notification-admin", "push-admin-prod", "other"}
+	if len(cfg.NotificationAdminRoles) != len(want) {
+		t.Fatalf("expected %d notification admin roles, got %d (%v)", len(want), len(cfg.NotificationAdminRoles), cfg.NotificationAdminRoles)
+	}
+	for i, w := range want {
+		if cfg.NotificationAdminRoles[i] != w {
+			t.Errorf("NotificationAdminRoles[%d] = %q, want %q", i, cfg.NotificationAdminRoles[i], w)
+		}
+	}
+}
+
+func TestLoad_NotificationAdminRolesUnsetIsNil(t *testing.T) {
+	clearEnv(t)
+
+	cfg := Load()
+
+	if cfg.NotificationAdminRoles != nil {
+		t.Errorf("expected NotificationAdminRoles nil when NOTIFICATION_ADMIN_ROLES unset, got %v", cfg.NotificationAdminRoles)
+	}
+}
+
+// The broadcast list is its own variable, so populating the general event-admin
+// list must not entitle anybody to push. This is the whole point of the split
+// and the one behaviour a future refactor is most likely to collapse by
+// accident.
+func TestLoad_NotificationAdminRolesIndependentOfRBACAdminRoles(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("RBAC_ADMIN_ROLES", "event-admin-stg,app-con-registrant-admin")
+
+	cfg := Load()
+
+	if cfg.NotificationAdminRoles != nil {
+		t.Errorf("RBAC_ADMIN_ROLES leaked into NotificationAdminRoles: %v", cfg.NotificationAdminRoles)
+	}
+	if len(cfg.AdminRoles) != 2 {
+		t.Fatalf("expected RBAC_ADMIN_ROLES to still load, got %v", cfg.AdminRoles)
+	}
+}
+
+func TestLoad_BoolFlagsOverridable(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("EXCLUDE_EMPLOYEE_COIN_ALLOCATION", "false")
+	t.Setenv("ENABLE_QR_VALIDATIONS", "false")
+
+	cfg := Load()
+
+	if cfg.ExcludeEmployeeCoinAllocation != false {
+		t.Errorf("expected ExcludeEmployeeCoinAllocation false")
+	}
+	if cfg.EnableQrValidations != false {
+		t.Errorf("expected EnableQrValidations false")
+	}
+}
+
+func TestLoad_ExternalClientConfigs(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("QR_PORTAL_ENDPOINT", "https://qr.example.com")
+	t.Setenv("QR_PORTAL_TOKEN_URL", "https://auth.example.com/token")
+	t.Setenv("QR_PORTAL_CLIENT_ID", "qr-id")
+	t.Setenv("QR_PORTAL_CLIENT_SECRET", "qr-secret")
+
+	cfg := Load()
+
+	if cfg.QRPortal.Endpoint != "https://qr.example.com" {
+		t.Errorf("QRPortal.Endpoint = %q", cfg.QRPortal.Endpoint)
+	}
+	if cfg.QRPortal.OAuth.TokenURL != "https://auth.example.com/token" {
+		t.Errorf("QRPortal.OAuth.TokenURL = %q", cfg.QRPortal.OAuth.TokenURL)
+	}
+	if cfg.QRPortal.OAuth.ClientID != "qr-id" {
+		t.Errorf("QRPortal.OAuth.ClientID = %q", cfg.QRPortal.OAuth.ClientID)
+	}
+	if cfg.QRPortal.OAuth.ClientSecret != "qr-secret" {
+		t.Errorf("QRPortal.OAuth.ClientSecret = %q", cfg.QRPortal.OAuth.ClientSecret)
+	}
+}
+
+func TestLoad_AIAgentDefaults(t *testing.T) {
+	clearEnv(t)
+
+	cfg := Load()
+
+	if cfg.AIAgent.ServiceURL != "" {
+		t.Errorf("expected empty AIAgent.ServiceURL by default, got %+v", cfg.AIAgent)
+	}
+	// An unset AI_TOKEN_URL is what makes the client skip OAuth entirely, so
+	// "empty by default" keeps a local AI service with no gateway working.
+	if cfg.AIAgent.OAuth.TokenURL != "" || cfg.AIAgent.OAuth.ClientID != "" || cfg.AIAgent.OAuth.ClientSecret != "" {
+		t.Errorf("expected empty AIAgent.OAuth by default, got %+v", cfg.AIAgent.OAuth)
+	}
+	if cfg.AIAgent.RequestTimeout != 120*time.Second {
+		t.Errorf("expected default AIAgent.RequestTimeout 120s, got %v", cfg.AIAgent.RequestTimeout)
+	}
+	if cfg.AIFeatureStatus.EnabledChatAssistant || cfg.AIFeatureStatus.EnabledPersonalizedAgenda ||
+		cfg.AIFeatureStatus.EnabledMatchMaker || cfg.AIFeatureStatus.EnabledO2Bar {
+		t.Errorf("expected every AIFeatureStatus flag to default to false, got %+v", cfg.AIFeatureStatus)
+	}
+}
+
+func TestLoad_AIAgentConfigFromEnv(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("AI_SERVICE_URL", "https://ai.example.com")
+	t.Setenv("AI_TOKEN_URL", "https://auth.example.com/token")
+	t.Setenv("AI_CLIENT_ID", "ai-client")
+	t.Setenv("AI_CLIENT_SECRET", "ai-secret")
+	t.Setenv("AI_REQUEST_TIMEOUT_SECONDS", "30")
+	t.Setenv("AI_ENABLED_CHAT_ASSISTANT", "true")
+	t.Setenv("AI_ENABLED_PERSONALIZED_AGENDA", "true")
+	t.Setenv("AI_ENABLED_MATCH_MAKER", "true")
+	t.Setenv("AI_ENABLED_O2_BAR", "true")
+
+	cfg := Load()
+
+	if cfg.AIAgent.ServiceURL != "https://ai.example.com" {
+		t.Errorf("ServiceURL = %q", cfg.AIAgent.ServiceURL)
+	}
+	if cfg.AIAgent.OAuth.TokenURL != "https://auth.example.com/token" ||
+		cfg.AIAgent.OAuth.ClientID != "ai-client" || cfg.AIAgent.OAuth.ClientSecret != "ai-secret" {
+		t.Errorf("AIAgent.OAuth = %+v", cfg.AIAgent.OAuth)
+	}
+	if cfg.AIAgent.RequestTimeout != 30*time.Second {
+		t.Errorf("RequestTimeout = %v, want 30s", cfg.AIAgent.RequestTimeout)
+	}
+	if !cfg.AIFeatureStatus.EnabledChatAssistant || !cfg.AIFeatureStatus.EnabledPersonalizedAgenda ||
+		!cfg.AIFeatureStatus.EnabledMatchMaker || !cfg.AIFeatureStatus.EnabledO2Bar {
+		t.Errorf("expected every AIFeatureStatus flag true, got %+v", cfg.AIFeatureStatus)
+	}
+}
+
+func TestValidate_DoesNotRequireAIAgentFields(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "administrator")
+	t.Setenv("DB_NAME", "agenda_organizer")
+	t.Setenv("DB_SCHEMA", "marketingops")
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("PII_ENCRYPTION_KEY", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=")
+	t.Setenv("REGISTRANT_SERVICE_URL", "https://registrant.example")
+
+	cfg := Load()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected no error with blank AIAgent config, got %v", err)
+	}
+}
+
+func TestValidate_RequiresCoreDBFields(t *testing.T) {
+	clearEnv(t)
+	cfg := Load()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for missing required fields")
+	}
+}
+
+func TestValidate_OKWithRequiredFieldsInDevelopment(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "administrator")
+	t.Setenv("DB_NAME", "agenda_organizer")
+	t.Setenv("DB_SCHEMA", "marketingops")
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("PII_ENCRYPTION_KEY", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=")
+	t.Setenv("REGISTRANT_SERVICE_URL", "https://registrant.example")
+
+	cfg := Load()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+}
+
+func TestLoad_PIIEncryptionKeyDecodedFromBase64(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("PII_ENCRYPTION_KEY", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=")
+	t.Setenv("REGISTRANT_SERVICE_URL", "https://registrant.example")
+
+	cfg := Load()
+	if len(cfg.PIIEncryptionKey) != 32 {
+		t.Fatalf("expected 32-byte decoded key, got %d bytes", len(cfg.PIIEncryptionKey))
+	}
+}
+
+func TestValidate_RequiresPIIEncryptionKey(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "administrator")
+	t.Setenv("DB_NAME", "agenda_organizer")
+	t.Setenv("DB_SCHEMA", "marketingops")
+	t.Setenv("APP_ENV", "development")
+
+	cfg := Load()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when PII_ENCRYPTION_KEY is missing")
+	}
+}
+
+func TestValidate_RejectsMalformedPIIEncryptionKey(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "administrator")
+	t.Setenv("DB_NAME", "agenda_organizer")
+	t.Setenv("DB_SCHEMA", "marketingops")
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("PII_ENCRYPTION_KEY", "dG9vLXNob3J0") // base64("too-short"), not 32 bytes
+
+	cfg := Load()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for a PII_ENCRYPTION_KEY that doesn't decode to 32 bytes")
+	}
+}
+
+func TestValidate_RejectsInvalidBase64PIIEncryptionKey(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "administrator")
+	t.Setenv("DB_NAME", "agenda_organizer")
+	t.Setenv("DB_SCHEMA", "marketingops")
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("PII_ENCRYPTION_KEY", "not-valid-base64!!!")
+	t.Setenv("REGISTRANT_SERVICE_URL", "https://registrant.example")
+
+	cfg := Load()
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid base64 PII_ENCRYPTION_KEY")
+	}
+	if !strings.Contains(err.Error(), "invalid base64") {
+		t.Errorf("error = %q, want it to mention invalid base64", err.Error())
+	}
+}
+
+func TestValidate_TokenValidatorRequiresJWKSAndIssuer(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "administrator")
+	t.Setenv("DB_NAME", "agenda_organizer")
+	t.Setenv("DB_SCHEMA", "marketingops")
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("TOKEN_VALIDATOR_ENABLED", "true")
+
+	cfg := Load()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when TOKEN_VALIDATOR_ENABLED=true but JWKS_ENDPOINT/JWT_ISSUER/JWT_AUDIENCE missing")
+	}
+}
+
+// JWT_AUDIENCE is a comma-separated list because more than one Asgardeo
+// application calls this backend -- the attendee microapp plus the service
+// application the AI service uses for its own reads -- and each mints tokens
+// carrying its own client id as the audience. Parsing has to survive however a
+// deployer actually types that into the Choreo console: spaces around the
+// separators, and a trailing comma left behind after removing an entry. A
+// blank entry that survived would be an audience no token can ever match, and
+// would sit in the accepted set looking like configuration that works.
+func TestLoad_JWTAudience_ParsesCommaSeparatedList(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+		want []string
+	}{
+		{"single value is unchanged", "client-a", []string{"client-a"}},
+		{"spaces around separators are trimmed", "a, b ,c", []string{"a", "b", "c"}},
+		{"trailing comma yields no empty entry", "a,b,", []string{"a", "b"}},
+		{"leading comma yields no empty entry", ",a,b", []string{"a", "b"}},
+		{"separators and spaces only yield nothing", " , ", nil},
+		{"unset yields nothing", "", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv("DB_HOST", "localhost")
+			t.Setenv("DB_USER", "administrator")
+			t.Setenv("DB_NAME", "agenda_organizer")
+			t.Setenv("DB_SCHEMA", "marketingops")
+			t.Setenv("APP_ENV", "development")
+			t.Setenv("JWT_AUDIENCE", tt.env)
+
+			got := Load().Audiences
+			if len(got) != len(tt.want) {
+				t.Fatalf("JWT_AUDIENCE=%q -> Audiences = %#v, want %#v", tt.env, got, tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Fatalf("JWT_AUDIENCE=%q -> Audiences = %#v, want %#v", tt.env, got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+// A JWT_AUDIENCE of nothing but separators parses to an empty list, which must
+// be rejected exactly like an unset one: booting with an accepted-audience set
+// that no token can match would 401 every request while looking configured.
+func TestValidate_TokenValidatorRejectsBlankAudienceList(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "administrator")
+	t.Setenv("DB_NAME", "agenda_organizer")
+	t.Setenv("DB_SCHEMA", "marketingops")
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("TOKEN_VALIDATOR_ENABLED", "true")
+	t.Setenv("JWKS_ENDPOINT", "https://idp.example/oauth2/jwks")
+	t.Setenv("JWT_ISSUER", "https://idp.example/oauth2/token")
+	t.Setenv("JWT_AUDIENCE", " , ")
+	t.Setenv("PII_ENCRYPTION_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	// Unrelated to audiences, but Validate() refuses without it, and a test that
+	// wants to see the JWT_AUDIENCE error must not trip over a different one first.
+	t.Setenv("REGISTRANT_SERVICE_URL", "https://registrant.example")
+
+	err := Load().Validate()
+	if err == nil {
+		t.Fatal("expected an error for a JWT_AUDIENCE that parses to no audiences")
+	}
+	if !strings.Contains(err.Error(), "JWT_AUDIENCE") {
+		t.Errorf("error = %q, want it to name JWT_AUDIENCE", err.Error())
+	}
+}
+
+// A multi-value JWT_AUDIENCE satisfies the validator requirement the same way a
+// single value always did.
+func TestValidate_TokenValidatorAcceptsMultipleAudiences(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "administrator")
+	t.Setenv("DB_NAME", "agenda_organizer")
+	t.Setenv("DB_SCHEMA", "marketingops")
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("TOKEN_VALIDATOR_ENABLED", "true")
+	t.Setenv("JWKS_ENDPOINT", "https://idp.example/oauth2/jwks")
+	t.Setenv("JWT_ISSUER", "https://idp.example/oauth2/token")
+	t.Setenv("JWT_AUDIENCE", "microapp-client-id, ai-service-client-id")
+	t.Setenv("PII_ENCRYPTION_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	// Required by Validate() and nothing to do with audiences; without it this
+	// test would pass or fail on an unrelated field.
+	t.Setenv("REGISTRANT_SERVICE_URL", "https://registrant.example")
+
+	cfg := Load()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected a two-audience config to validate, got %v", err)
+	}
+	if len(cfg.Audiences) != 2 {
+		t.Fatalf("Audiences = %#v, want two entries", cfg.Audiences)
+	}
+}
+
+func TestDSN_WithAndWithoutPassword(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "administrator")
+	t.Setenv("DB_NAME", "agenda_organizer")
+	t.Setenv("DB_SCHEMA", "marketingops")
+	t.Setenv("DB_SSLMODE", "disable")
+
+	cfg := Load()
+	dsn := cfg.DSN()
+	if dsn != "host=localhost port=5432 user=administrator dbname=agenda_organizer sslmode=disable options=--search_path=marketingops" {
+		t.Errorf("unexpected DSN without password: %q", dsn)
+	}
+
+	cfg.DBPassword = "secret"
+	dsn = cfg.DSN()
+	if dsn != "host=localhost port=5432 user=administrator password=secret dbname=agenda_organizer sslmode=disable options=--search_path=marketingops" {
+		t.Errorf("unexpected DSN with password: %q", dsn)
+	}
+}
+
+// --- D1: the HTTP write deadline must outlive the AI request budget ---
+
+func TestHTTPWriteTimeout_ExceedsAIRequestTimeout(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "administrator")
+	t.Setenv("DB_NAME", "agenda_organizer")
+	t.Setenv("DB_SCHEMA", "marketingops")
+	t.Setenv("APP_ENV", "development")
+
+	cases := []struct {
+		name    string
+		seconds string
+		want    time.Duration
+	}{
+		{"default 120s budget", "", 130 * time.Second},
+		{"short budget still floors at 130s", "5", 130 * time.Second},
+		{"long budget wins over the floor", "300", 310 * time.Second},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.seconds == "" {
+				os.Unsetenv("AI_REQUEST_TIMEOUT_SECONDS")
+			} else {
+				t.Setenv("AI_REQUEST_TIMEOUT_SECONDS", tc.seconds)
+			}
+			cfg := Load()
+			got := cfg.HTTPWriteTimeout()
+			if got != tc.want {
+				t.Errorf("HTTPWriteTimeout() = %v, want %v", got, tc.want)
+			}
+			if got <= cfg.AIAgent.RequestTimeout {
+				t.Errorf("HTTPWriteTimeout() = %v, must exceed AI budget %v", got, cfg.AIAgent.RequestTimeout)
+			}
+		})
+	}
+}
+
+// --- D3: production with token validation off is detectable ---
+
+func TestInsecureAuthConfig(t *testing.T) {
+	cases := []struct {
+		appEnv    string
+		validator string
+		want      bool
+	}{
+		{"production", "", true},
+		{"production", "false", true},
+		{"production", "true", false},
+		{"development", "false", false},
+		{"development", "true", false},
+		{"development", "", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.appEnv+"/"+tc.validator, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv("DB_HOST", "localhost")
+			t.Setenv("DB_USER", "administrator")
+			t.Setenv("DB_NAME", "agenda_organizer")
+			t.Setenv("DB_SCHEMA", "marketingops")
+			t.Setenv("DB_PASSWORD", "pw")
+			t.Setenv("APP_ENV", tc.appEnv)
+			if tc.validator != "" {
+				t.Setenv("TOKEN_VALIDATOR_ENABLED", tc.validator)
+			}
+
+			cfg := Load()
+			if got := cfg.InsecureAuthConfig(); got != tc.want {
+				t.Errorf("InsecureAuthConfig() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Validate() itself never fails on an insecure auth config -- it has no view of
+// "is this prod" beyond AppEnv, and the fail-closed decision lives in main.go,
+// which exits non-zero on InsecureAuthConfig() before serving traffic. This test
+// pins that separation: Validate() returns nil while the predicate reports the
+// insecure state that main.go acts on. (When the validator IS enabled in prod,
+// Validate() then requires JWKS/issuer/audience -- see
+// TestValidate_TokenValidatorRequiresJWKSAndIssuer.)
+func TestValidate_InsecureAuthConfigIsNotFatal(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "administrator")
+	t.Setenv("DB_NAME", "agenda_organizer")
+	t.Setenv("DB_SCHEMA", "marketingops")
+	t.Setenv("DB_PASSWORD", "pw")
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("PII_ENCRYPTION_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	t.Setenv("REGISTRANT_SERVICE_URL", "https://registrant.example")
+
+	cfg := Load()
+	if !cfg.InsecureAuthConfig() {
+		t.Fatal("expected InsecureAuthConfig() = true for this fixture")
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil (the insecure auth config must warn, not fail)", err)
+	}
+}
+
+// --- C2: a missing merchant wallet is detectable but not fatal ---
+
+func TestShopPaymentsConfigured(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "administrator")
+	t.Setenv("DB_NAME", "agenda_organizer")
+	t.Setenv("DB_SCHEMA", "marketingops")
+	t.Setenv("DB_PASSWORD", "pw")
+	t.Setenv("PII_ENCRYPTION_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	t.Setenv("REGISTRANT_SERVICE_URL", "https://registrant.example")
+
+	cfg := Load()
+	if cfg.ShopPaymentsConfigured() {
+		t.Error("ShopPaymentsConfigured() = true with SHOP_MASTER_WALLET_ADDRESS unset, want false")
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil (a deployment with no shop must still start)", err)
+	}
+
+	t.Setenv("SHOP_MASTER_WALLET_ADDRESS", "   ")
+	if Load().ShopPaymentsConfigured() {
+		t.Error("ShopPaymentsConfigured() = true for a whitespace-only address, want false")
+	}
+
+	t.Setenv("SHOP_MASTER_WALLET_ADDRESS", "0xabc")
+	if !Load().ShopPaymentsConfigured() {
+		t.Error("ShopPaymentsConfigured() = false with an address set, want true")
+	}
+}
+
+func TestLoad_MoesifDefaultsToDisabled(t *testing.T) {
+	clearEnv(t)
+
+	cfg := Load()
+
+	if cfg.Moesif.Enabled {
+		t.Error("expected Moesif analytics disabled by default")
+	}
+	if cfg.Moesif.ProjectName != "marketing-web" {
+		t.Errorf("expected default ProjectName marketing-web, got %q", cfg.Moesif.ProjectName)
+	}
+	if cfg.Moesif.AppName != "con-app-backend" {
+		t.Errorf("expected default AppName con-app-backend, got %q", cfg.Moesif.AppName)
+	}
+	if cfg.Moesif.APIEndpoint != "" {
+		t.Errorf("expected empty APIEndpoint so internal/analytics picks the collector, got %q", cfg.Moesif.APIEndpoint)
+	}
+}
+
+func TestLoad_MoesifFromEnv(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("MOESIF_ENABLED", "true")
+	t.Setenv("MOESIF_APPLICATION_ID", "collector-app-id")
+	t.Setenv("MOESIF_API_ENDPOINT", "https://api-eu.moesif.net")
+	t.Setenv("MOESIF_PROJECT_NAME", "some-project")
+	t.Setenv("MOESIF_APP_NAME", "some-app")
+
+	cfg := Load()
+
+	if !cfg.Moesif.Enabled {
+		t.Error("expected Moesif enabled")
+	}
+	if cfg.Moesif.ApplicationID != "collector-app-id" {
+		t.Errorf("expected ApplicationID collector-app-id, got %q", cfg.Moesif.ApplicationID)
+	}
+	if cfg.Moesif.APIEndpoint != "https://api-eu.moesif.net" {
+		t.Errorf("expected the EU collector, got %q", cfg.Moesif.APIEndpoint)
+	}
+	if cfg.Moesif.ProjectName != "some-project" || cfg.Moesif.AppName != "some-app" {
+		t.Errorf("expected the env names to win, got %q/%q", cfg.Moesif.ProjectName, cfg.Moesif.AppName)
+	}
+}
+
+// Enabled-but-unconfigured is rejected rather than degraded, because analytics
+// that is switched on and silently discarding every event looks identical to a
+// conference nobody attended.
+func TestValidate_MoesifEnabledRequiresApplicationID(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "administrator")
+	t.Setenv("DB_NAME", "agenda_organizer")
+	t.Setenv("DB_SCHEMA", "marketingops")
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("PII_ENCRYPTION_KEY", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=")
+	t.Setenv("REGISTRANT_SERVICE_URL", "https://registrant.example")
+	t.Setenv("MOESIF_ENABLED", "true")
+
+	cfg := Load()
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected an error when MOESIF_ENABLED=true without an application id")
+	}
+	if !strings.Contains(err.Error(), "MOESIF_APPLICATION_ID") {
+		t.Errorf("expected the error to name the env var, got %v", err)
+	}
+}
+
+// A plaintext collector would put the application id -- a credential -- on the
+// wire in the clear, so it is refused at startup like a missing id is.
+func TestValidate_MoesifRejectsPlaintextEndpoint(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "administrator")
+	t.Setenv("DB_NAME", "agenda_organizer")
+	t.Setenv("DB_SCHEMA", "marketingops")
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("PII_ENCRYPTION_KEY", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=")
+	t.Setenv("REGISTRANT_SERVICE_URL", "https://registrant.example")
+	t.Setenv("MOESIF_ENABLED", "true")
+	t.Setenv("MOESIF_APPLICATION_ID", "collector-app-id")
+	t.Setenv("MOESIF_API_ENDPOINT", "http://api.moesif.net")
+
+	cfg := Load()
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected an error for a plaintext collector endpoint")
+	}
+	if !strings.Contains(err.Error(), "MOESIF_API_ENDPOINT") {
+		t.Errorf("expected the error to name the env var, got %v", err)
+	}
+}
+
+// The one non-production use of the override is a stub on the same host, and
+// that stays allowed: there is no network hop to intercept.
+func TestValidate_MoesifAllowsLoopbackStub(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "administrator")
+	t.Setenv("DB_NAME", "agenda_organizer")
+	t.Setenv("DB_SCHEMA", "marketingops")
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("PII_ENCRYPTION_KEY", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=")
+	t.Setenv("REGISTRANT_SERVICE_URL", "https://registrant.example")
+	t.Setenv("MOESIF_ENABLED", "true")
+	t.Setenv("MOESIF_APPLICATION_ID", "collector-app-id")
+	t.Setenv("MOESIF_API_ENDPOINT", "http://localhost:9999")
+
+	cfg := Load()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected a loopback stub to be allowed, got %v", err)
+	}
+}
+
+func TestValidate_MoesifDisabledNeedsNothing(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "administrator")
+	t.Setenv("DB_NAME", "agenda_organizer")
+	t.Setenv("DB_SCHEMA", "marketingops")
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("PII_ENCRYPTION_KEY", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=")
+	t.Setenv("REGISTRANT_SERVICE_URL", "https://registrant.example")
+
+	cfg := Load()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected no error with analytics off, got %v", err)
+	}
+}
+
+// validAIBaseConfig sets the minimum a Config needs to pass Validate() so the
+// AI cases below fail for their own reason and not an unrelated one.
+func validAIBaseConfig(t *testing.T) {
+	t.Helper()
+	clearEnv(t)
+	t.Setenv("DB_HOST", "localhost")
+	t.Setenv("DB_USER", "administrator")
+	t.Setenv("DB_NAME", "agenda_organizer")
+	t.Setenv("DB_SCHEMA", "marketingops")
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("PII_ENCRYPTION_KEY", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=")
+	t.Setenv("REGISTRANT_SERVICE_URL", "https://registrant.example")
+	// Validate() refuses without it, so a base config that calls itself valid
+	// has to carry it; otherwise every caller fails on this instead of on the
+	// field it came to test.
+	t.Setenv("REGISTRANT_SERVICE_URL", "https://registrant.example")
+}
+
+func TestValidate_RejectsEnabledAIWithoutServiceURL(t *testing.T) {
+	validAIBaseConfig(t)
+	t.Setenv("AI_ENABLED_CHAT_ASSISTANT", "true")
+
+	err := Load().Validate()
+	if err == nil {
+		t.Fatal("expected an error when an AI feature is enabled with no AI_SERVICE_URL")
+	}
+	if !strings.Contains(err.Error(), "AI_SERVICE_URL") {
+		t.Errorf("error = %q, want it to mention AI_SERVICE_URL", err.Error())
+	}
+}
+
+// Partial credentials authenticate nothing, and the gateway 401 they produce is
+// indistinguishable from sending no token at all -- so they must not reach a
+// running service.
+func TestValidate_RejectsPartialAIOAuthCredentials(t *testing.T) {
+	cases := map[string]map[string]string{
+		"token URL only":     {"AI_TOKEN_URL": "https://auth.example.com/token"},
+		"missing secret":     {"AI_TOKEN_URL": "https://auth.example.com/token", "AI_CLIENT_ID": "id"},
+		"credentials no URL": {"AI_CLIENT_ID": "id", "AI_CLIENT_SECRET": "secret"},
+	}
+	for name, env := range cases {
+		t.Run(name, func(t *testing.T) {
+			validAIBaseConfig(t)
+			for k, v := range env {
+				t.Setenv(k, v)
+			}
+
+			err := Load().Validate()
+			if err == nil {
+				t.Fatal("expected an error for partially configured AI OAuth credentials")
+			}
+			if !strings.Contains(err.Error(), "AI_TOKEN_URL") {
+				t.Errorf("error = %q, want it to mention AI_TOKEN_URL", err.Error())
+			}
+		})
+	}
+}
+
+func TestValidate_AcceptsCompleteAndAbsentAIOAuthCredentials(t *testing.T) {
+	t.Run("all three set", func(t *testing.T) {
+		validAIBaseConfig(t)
+		t.Setenv("AI_SERVICE_URL", "https://ai.example.com")
+		t.Setenv("AI_TOKEN_URL", "https://auth.example.com/token")
+		t.Setenv("AI_CLIENT_ID", "id")
+		t.Setenv("AI_CLIENT_SECRET", "secret")
+		t.Setenv("AI_ENABLED_CHAT_ASSISTANT", "true")
+
+		if err := Load().Validate(); err != nil {
+			t.Errorf("Validate() = %v, want nil", err)
+		}
+	})
+
+	// The local-development shape: an AI service addressed directly, with no
+	// gateway in front of it and so nothing to authenticate to.
+	t.Run("none set", func(t *testing.T) {
+		validAIBaseConfig(t)
+		t.Setenv("AI_SERVICE_URL", "http://localhost:8000")
+		t.Setenv("AI_ENABLED_CHAT_ASSISTANT", "true")
+
+		if err := Load().Validate(); err != nil {
+			t.Errorf("Validate() = %v, want nil", err)
+		}
+	})
+}
+
+// A value is trimmed at load time so that what Validate() inspects is what the
+// AI client sends. Untrimmed, a pasted-secret newline survives validation and
+// then breaks http.NewRequest at URL-parse time, which the handlers read as an
+// unreachable service rather than a bad credential.
+func TestLoad_TrimsAIAgentValues(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("AI_SERVICE_URL", " https://ai.example.com\n")
+	t.Setenv("AI_TOKEN_URL", "https://auth.example.com/token\n")
+	t.Setenv("AI_CLIENT_ID", "  ai-client  ")
+	t.Setenv("AI_CLIENT_SECRET", "ai-secret\r\n")
+
+	cfg := Load()
+
+	if cfg.AIAgent.ServiceURL != "https://ai.example.com" {
+		t.Errorf("ServiceURL = %q, want it trimmed", cfg.AIAgent.ServiceURL)
+	}
+	if cfg.AIAgent.OAuth.TokenURL != "https://auth.example.com/token" {
+		t.Errorf("TokenURL = %q, want it trimmed", cfg.AIAgent.OAuth.TokenURL)
+	}
+	if cfg.AIAgent.OAuth.ClientID != "ai-client" {
+		t.Errorf("ClientID = %q, want it trimmed", cfg.AIAgent.OAuth.ClientID)
+	}
+	if cfg.AIAgent.OAuth.ClientSecret != "ai-secret" {
+		t.Errorf("ClientSecret = %q, want it trimmed", cfg.AIAgent.OAuth.ClientSecret)
+	}
+}
+
+// Whitespace-only credentials used to read as "unset" to validation and as
+// "set" to the client, which then took the OAuth branch with a blank token URL
+// and failed every AI request. After trimming the two agree: this is the
+// no-credentials shape, and against a remote URL it is rejected outright.
+func TestLoad_WhitespaceOnlyAICredentialsBecomeEmpty(t *testing.T) {
+	validAIBaseConfig(t)
+	t.Setenv("AI_SERVICE_URL", "https://ai.example.com")
+	t.Setenv("AI_TOKEN_URL", "   ")
+	t.Setenv("AI_CLIENT_ID", "\t")
+	t.Setenv("AI_CLIENT_SECRET", "\n")
+	t.Setenv("AI_ENABLED_CHAT_ASSISTANT", "true")
+
+	cfg := Load()
+	if cfg.AIAgent.OAuth.TokenURL != "" || cfg.AIAgent.OAuth.ClientID != "" || cfg.AIAgent.OAuth.ClientSecret != "" {
+		t.Fatalf("expected whitespace-only credentials to load as empty, got %+v", cfg.AIAgent.OAuth)
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected whitespace-only credentials against a remote AI_SERVICE_URL to be rejected")
+	}
+}
+
+// The regression this validation exists for: every flag on, AI_SERVICE_URL
+// pointing at a gateway, no credentials for it. The all-or-nothing rule alone
+// permits it, because zero of three is a legal shape.
+func TestValidate_RejectsRemoteAIServiceURLWithoutCredentials(t *testing.T) {
+	cases := map[string]string{
+		"gateway host":   "https://gateway.example.com/con/ai/v1.0",
+		"public host":    "https://ai.example.com",
+		"lan address":    "http://10.0.0.4:8000",
+		"look-alike":     "https://ai-localhost.example.com",
+		"unparseable":    "http://%zz",
+		"host-less":      "localhost:8000",
+		"loopback-named": "https://localhost.example.com",
+	}
+	for name, serviceURL := range cases {
+		t.Run(name, func(t *testing.T) {
+			validAIBaseConfig(t)
+			t.Setenv("AI_SERVICE_URL", serviceURL)
+			t.Setenv("AI_ENABLED_MATCH_MAKER", "true")
+
+			err := Load().Validate()
+			if err == nil {
+				t.Fatal("expected an error for an enabled AI feature pointing off-machine with no credentials")
+			}
+			for _, want := range []string{"AI_TOKEN_URL", "AI_CLIENT_ID", "AI_CLIENT_SECRET"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error = %q, want it to name %s", err.Error(), want)
+				}
+			}
+		})
+	}
+}
+
+// The exemption that keeps local development working: an AI service on this
+// machine has no gateway in front of it, so there is nothing to authenticate to.
+func TestValidate_AllowsLocalAIServiceURLWithoutCredentials(t *testing.T) {
+	cases := map[string]string{
+		"localhost":      "http://localhost:8000",
+		"uppercase host": "http://LOCALHOST:8000",
+		"127.0.0.1":      "http://127.0.0.1:8000",
+		"127.0.0.0/8":    "http://127.1.2.3:8000",
+		"ipv6 loopback":  "http://[::1]:8000",
+		"no port":        "http://localhost",
+	}
+	for name, serviceURL := range cases {
+		t.Run(name, func(t *testing.T) {
+			validAIBaseConfig(t)
+			t.Setenv("AI_SERVICE_URL", serviceURL)
+			t.Setenv("AI_ENABLED_CHAT_ASSISTANT", "true")
+
+			if err := Load().Validate(); err != nil {
+				t.Errorf("Validate() = %v, want nil for a local AI service with no gateway", err)
+			}
+		})
+	}
+}
+
+// A remote gateway with all three credentials is the deployed shape, and a
+// trailing newline on a pasted secret must not change that verdict.
+func TestValidate_AcceptsRemoteAIServiceURLWithCredentials(t *testing.T) {
+	validAIBaseConfig(t)
+	t.Setenv("AI_SERVICE_URL", "https://ai.example.com\n")
+	t.Setenv("AI_TOKEN_URL", "https://auth.example.com/token\n")
+	t.Setenv("AI_CLIENT_ID", "id\n")
+	t.Setenv("AI_CLIENT_SECRET", "secret\n")
+	t.Setenv("AI_ENABLED_CHAT_ASSISTANT", "true")
+	t.Setenv("AI_ENABLED_PERSONALIZED_AGENDA", "true")
+	t.Setenv("AI_ENABLED_MATCH_MAKER", "true")
+	t.Setenv("AI_ENABLED_O2_BAR", "true")
+
+	if err := Load().Validate(); err != nil {
+		t.Errorf("Validate() = %v, want nil", err)
+	}
+}
+
+// With every AI flag off there is no feature to break, so an unauthenticated
+// remote URL is left alone rather than blocking startup.
+func TestValidate_RemoteAIServiceURLWithoutCredentialsOKWhenDisabled(t *testing.T) {
+	validAIBaseConfig(t)
+	t.Setenv("AI_SERVICE_URL", "https://ai.example.com")
+
+	if err := Load().Validate(); err != nil {
+		t.Errorf("Validate() = %v, want nil with every AI feature disabled", err)
+	}
+}
+
+// http.Client reads Timeout <= 0 as "no timeout", so a non-positive value would
+// remove the AI deadline while the server's write deadline still fires at its
+// 130s floor -- a truncated response over a handler that never stops waiting.
+func TestLoad_NonPositiveAIRequestTimeoutFallsBackToDefault(t *testing.T) {
+	cases := map[string]string{
+		"zero":         "0",
+		"negative":     "-5",
+		"not a number": "abc",
+		"blank":        "   ",
+	}
+	for name, seconds := range cases {
+		t.Run(name, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv("AI_REQUEST_TIMEOUT_SECONDS", seconds)
+
+			cfg := Load()
+			if cfg.AIAgent.RequestTimeout != 120*time.Second {
+				t.Errorf("RequestTimeout = %v, want the 120s default", cfg.AIAgent.RequestTimeout)
+			}
+			if cfg.HTTPWriteTimeout() != 130*time.Second {
+				t.Errorf("HTTPWriteTimeout() = %v, want 130s", cfg.HTTPWriteTimeout())
+			}
+		})
+	}
+}
+
+// notificationEnv is the complete, valid notification block. Each partial case
+// below is this map with one key removed, so the cases stay in step with the
+// rule as it changes.
+var notificationEnv = map[string]string{
+	"NOTIFICATION_ENDPOINT":      "https://push.example.com/v1.0",
+	"NOTIFICATION_TOKEN_URL":     "https://auth.example.com/token",
+	"NOTIFICATION_CLIENT_ID":     "notification-client",
+	"NOTIFICATION_CLIENT_SECRET": "notification-secret",
+}
+
+// notificationEnvWithout returns the valid block minus one variable -- the
+// deployment shape that boots today and then fails every broadcast.
+func notificationEnvWithout(missing string) map[string]string {
+	env := make(map[string]string, len(notificationEnv))
+	for k, v := range notificationEnv {
+		if k == missing {
+			continue
+		}
+		env[k] = v
+	}
+	return env
+}
+
+// Three of four never works: the push gateway authorises on the token's
+// client_id claim, so a grant missing any of its parts yields a 401 that the
+// broadcast handler reports without naming the absent variable.
+func TestValidate_RejectsPartialNotificationConfig(t *testing.T) {
+	for _, missing := range []string{
+		"NOTIFICATION_ENDPOINT",
+		"NOTIFICATION_TOKEN_URL",
+		"NOTIFICATION_CLIENT_ID",
+		"NOTIFICATION_CLIENT_SECRET",
+	} {
+		t.Run("missing "+missing, func(t *testing.T) {
+			validAIBaseConfig(t)
+			for k, v := range notificationEnvWithout(missing) {
+				t.Setenv(k, v)
+			}
+
+			err := Load().Validate()
+			if err == nil {
+				t.Fatalf("expected an error with %s unset and the rest of the notification block set", missing)
+			}
+			if !strings.Contains(err.Error(), missing) {
+				t.Errorf("error = %q, want it to mention %s", err.Error(), missing)
+			}
+		})
+	}
+}
+
+func TestValidate_AcceptsCompleteAndAbsentNotificationConfig(t *testing.T) {
+	t.Run("all four set", func(t *testing.T) {
+		validAIBaseConfig(t)
+		for k, v := range notificationEnv {
+			t.Setenv(k, v)
+		}
+
+		if err := Load().Validate(); err != nil {
+			t.Errorf("Validate() = %v, want nil", err)
+		}
+	})
+
+	// A deployment that never broadcasts configures nothing here, so an empty
+	// block must still boot -- the rule is all-or-nothing, not mandatory.
+	t.Run("none set", func(t *testing.T) {
+		validAIBaseConfig(t)
+
+		if err := Load().Validate(); err != nil {
+			t.Errorf("Validate() = %v, want nil with no notification configuration at all", err)
+		}
+	})
+}
+
+// Trimmed at load time so that a whitespace-only value reads as unset to the
+// all-or-nothing rule and to the notification client alike, and so that a
+// secret pasted into a Choreo config field does not carry its newline into the
+// token request.
+func TestLoad_TrimsNotificationValues(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("NOTIFICATION_ENDPOINT", " https://push.example.com/v1.0\n")
+	t.Setenv("NOTIFICATION_TOKEN_URL", "https://auth.example.com/token\n")
+	t.Setenv("NOTIFICATION_CLIENT_ID", "  notification-client  ")
+	t.Setenv("NOTIFICATION_CLIENT_SECRET", "notification-secret\r\n")
+
+	cfg := Load()
+
+	if cfg.Notification.Endpoint != "https://push.example.com/v1.0" {
+		t.Errorf("Endpoint = %q, want it trimmed", cfg.Notification.Endpoint)
+	}
+	if cfg.Notification.OAuth.TokenURL != "https://auth.example.com/token" {
+		t.Errorf("TokenURL = %q, want it trimmed", cfg.Notification.OAuth.TokenURL)
+	}
+	if cfg.Notification.OAuth.ClientID != "notification-client" {
+		t.Errorf("ClientID = %q, want it trimmed", cfg.Notification.OAuth.ClientID)
+	}
+	if cfg.Notification.OAuth.ClientSecret != "notification-secret" {
+		t.Errorf("ClientSecret = %q, want it trimmed", cfg.Notification.OAuth.ClientSecret)
+	}
+}

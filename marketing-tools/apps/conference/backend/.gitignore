@@ -1,0 +1,6 @@
+.env
+.env.local
+.claude/
+/bin/
+*.test
+CLAUDE.md

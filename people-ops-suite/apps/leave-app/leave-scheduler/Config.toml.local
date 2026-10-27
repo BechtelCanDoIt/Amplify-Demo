@@ -1,0 +1,36 @@
+[leave_scheduler]
+sabbaticalReminderLeadTimeInDays = 28
+
+[leave_scheduler.database.dbConfig]
+host = ""
+user = ""
+password = ""
+database = ""
+port = 3306
+maxOpenConnections = 5
+maxConnectionLifeTime = 180.0
+minIdleConnections = 1
+
+[leave_scheduler.employee]
+hrEntityBaseUrl = ""
+
+[leave_scheduler.employee.oauthConfig]
+tokenUrl = ""
+clientId = ""
+clientSecret = ""
+
+[leave_scheduler.email]
+# Non-production: true sends every reminder only to debugRecipients, with no CC, and does not mark
+# reminders as sent, so every run re-sends them.
+isDebug = true
+debugRecipients = [""]
+
+[leave_scheduler.email.emailServiceConfig]
+emailServiceEndpoint = ""
+from = ""
+peopleOperationsRecipients = [""]
+
+[leave_scheduler.email.emailServiceConfig.oauthConfig]
+tokenUrl = ""
+clientId = ""
+clientSecret = ""

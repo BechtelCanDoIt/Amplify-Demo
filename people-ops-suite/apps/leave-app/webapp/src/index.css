@@ -1,0 +1,30 @@
+@import "./styles/fonts.css";
+
+html,
+body {
+  margin: 0;
+  font-family: "Poppins";
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Hide scrollbar for Chrome, Safari and Opera */
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+#root::-webkit-scrollbar {
+  display: none;
+}
+
+/* Hide scrollbar for IE, Edge and Firefox */
+html,
+body,
+#root {
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
+}
+.css-8f57v9 {
+  padding: 1rem;
+}
+.css-13j2prs {
+  padding-top: 1rem;
+}

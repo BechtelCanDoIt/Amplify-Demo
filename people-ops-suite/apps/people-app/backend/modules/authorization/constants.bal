@@ -1,0 +1,34 @@
+// Copyright (c) 2025 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License. 
+
+# Authorization Constants.
+public const JWT_ASSERTION_HEADER = "x-jwt-assertion";
+public const HEADER_USER_INFO = "user-info";
+# Request-context key holding the client id of an allowed service caller (see `ServiceClientConfig`).
+public const HEADER_SERVICE_CLIENT = "service-client";
+
+# Privileges.
+public const ADMIN_PRIVILEGE = 999;
+public const EMPLOYEE_PRIVILEGE = 987;
+public const LEAD_PRIVILEGE = 993;
+public const SERVICE_DESK_PRIVILEGE = 991;
+# Read-only visibility of employee profiles and access to employee reports, without any
+# ability to change a record.
+public const EMPLOYEE_VIEW_PRIVILEGE = 989;
+# Everything the employee-view role sees, plus the ability to record a departure.
+public const RESIGNATION_PRIVILEGE = 985;
+# Access to the QR code report and nothing else: no employee profile visibility.
+public const QR_EXPORT_PRIVILEGE = 983;

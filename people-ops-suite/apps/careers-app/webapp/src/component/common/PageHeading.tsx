@@ -1,0 +1,41 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+import { Box, Typography } from "@mui/material";
+
+interface PageHeadingProps {
+  // The first word, shown in the brand color.
+  accent: string;
+  children: React.ReactNode;
+  mb?: number;
+}
+
+// A page title with its first word in the brand color: "My Applications", "Candidate Passport".
+const PageHeading = ({ accent, children, mb = 3 }: PageHeadingProps) => (
+  <Typography
+    component="h2"
+    sx={{ textAlign: "center", fontSize: { xs: "34px", md: "48px" }, fontWeight: 800, lineHeight: 1.15, mb }}
+  >
+    <Box component="span" sx={{ color: "primary.main" }}>
+      {accent}
+    </Box>{" "}
+    <Box component="span" sx={{ color: "text.primary" }}>
+      {children}
+    </Box>
+  </Typography>
+);
+
+export default PageHeading;

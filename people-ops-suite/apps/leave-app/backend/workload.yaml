@@ -1,0 +1,11 @@
+apiVersion: openchoreo.dev/v1alpha1
+metadata:
+  name: leave-app-backend
+endpoints:
+- name: endpoint-9090-803
+  displayName: Endpoint 9090
+  port: 9090
+  type: HTTP
+  basePath: /
+  visibility:
+  - external

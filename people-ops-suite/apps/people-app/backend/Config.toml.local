@@ -1,0 +1,98 @@
+isMaintenanceMode = false
+
+[people.authorization.authorizedRoles]
+EMPLOYEE_ROLE = ""
+ADMIN_ROLE = ""
+SERVICE_DESK_ROLE = ""
+EMPLOYEE_VIEW_ROLE = ""
+RESIGNATION_ROLE = ""
+QR_EXPORT_ROLE = ""
+EXTERNAL_USER_ROLES = [];
+
+# Service-to-service callers (gateway client-credentials tokens, no user): client id -> routes it may call.
+# Empty = none. Confirm the client-id claim name against a real gateway token.
+[people.authorization.serviceClients]
+clientIdClaim = "azp"
+applicationClaim = "aut"
+applicationValue = "APPLICATION"
+
+# One entry per client id, e.g. amplify-api-client = ["GET employees/basic-info"]
+[people.authorization.serviceClients.clientRoutes]
+
+[people.database.dbConfig]
+host = ""
+user = ""
+password = ""
+database = ""
+port = 
+maxOpenConnections = 
+maxConnectionLifeTime = 
+minIdleConnections = 
+connectTimeout = 
+sslMode = "PREFERRED"
+
+[people.promotion.promotionDbConfig]
+host = ""
+user = ""
+password = ""
+database = ""
+port = 
+maxOpenConnections = 
+# Keep maxConnectionLifeTime below the HRIS server's wait_timeout (300s at the
+# time of writing) and minIdleConnections at 0. The pool must retire a
+# connection before the server closes it, or a query after an idle period
+# fails with "No operations allowed after connection closed" (SQL state 08003).
+maxConnectionLifeTime = 
+minIdleConnections = 
+connectTimeout = 
+sslMode = "PREFERRED"
+
+[people.wso2_coin]
+masterWalletAddress = ""
+reservationWindowStartHour = 
+reservationWindowEndHour = 
+pendingReservationExpiryMinutes = 
+transactionEndpoint = ""
+
+[people.wso2_coin.clientAuthConfig]
+tokenUrl = ""
+clientId = ""
+clientSecret = ""
+scopes = []
+
+[people.wso2_coin.parkingSheetConfig]
+tokenUrl = ""
+refreshToken = ""
+clientId = ""
+clientSecret = ""
+sheetId = ""
+sheetName = ""
+
+[people.qr]
+qrGenerationServiceEndpoint = ""
+
+[people.qr.qrClientAuthConfig]
+tokenUrl = ""
+clientId = ""
+clientSecret = ""
+
+[people.scim]
+scimOperationsServiceUrl = ""
+
+[people.scim.scimClientAuthConfig]
+tokenUrl = ""
+clientId = ""
+clientSecret = ""
+
+[people.email]
+appName = ""
+
+[people.email.emailServiceConfig]
+emailServiceEndpoint = ""
+to = [""]
+from = ""
+
+[people.email.emailServiceConfig.oauthConfig]
+tokenUrl = ""
+clientId = ""
+clientSecret = ""

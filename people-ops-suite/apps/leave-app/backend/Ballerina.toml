@@ -1,0 +1,8 @@
+[package]
+org = "wso2"
+name = "leave_service"
+version = "1.1.2"
+distribution = "2201.9.8"
+
+[build-options]
+observabilityIncluded = true

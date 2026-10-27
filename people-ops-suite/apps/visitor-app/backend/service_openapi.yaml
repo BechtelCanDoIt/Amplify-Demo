@@ -1,0 +1,364 @@
+openapi: 3.0.1
+info:
+  title: /
+  version: 1.0.0
+servers:
+- url: "{server}:{port}/"
+  variables:
+    server:
+      default: http://localhost
+    port:
+      default: "9090"
+paths:
+  /user-info:
+    get:
+      summary: Fetch logged-in user's details.
+      operationId: getUserInfo
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserInfo'
+        "500":
+          description: InternalServerError
+  /visitors/{hashedNic}:
+    get:
+      summary: Fetches a specific visitor by hashed nic number.
+      operationId: getVisitorsHashednic
+      parameters:
+      - name: hashedNic
+        in: path
+        description: Hashed NIC number of the visitor
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Visitor'
+        "500":
+          description: InternalServerError
+        "404":
+          description: NotFound
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+  /visitors:
+    post:
+      summary: Create a new visitor.
+      operationId: postVisitors
+      requestBody:
+        description: Payload containing the visitor details
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddVisitorPayload'
+        required: true
+      responses:
+        "201":
+          description: Created
+        "500":
+          description: InternalServerError
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+  /visits:
+    get:
+      summary: Fetches visits based on the given filters.
+      operationId: getVisits
+      parameters:
+      - name: limit
+        in: query
+        description: 'Limit number of visits to fetch  '
+        schema:
+          type: integer
+          format: int64
+          nullable: true
+      - name: offset
+        in: query
+        description: Offset for pagination
+        schema:
+          type: integer
+          format: int64
+          nullable: true
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VisitsResponse'
+        "500":
+          description: InternalServerError
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+    post:
+      summary: Create a new visit.
+      operationId: postVisits
+      requestBody:
+        description: Payload containing the visit details
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddVisitPayload'
+        required: true
+      responses:
+        "201":
+          description: Created
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+components:
+  schemas:
+    AddVisitPayload:
+      required:
+      - accessibleLocations
+      - companyName
+      - nicHash
+      - passNumber
+      - purposeOfVisit
+      - timeOfDeparture
+      - timeOfEntry
+      - whomTheyMeet
+      type: object
+      properties:
+        nicHash:
+          type: string
+          description: Nic Hash of the visitor
+        companyName:
+          type: string
+          description: Company name of visitor
+          nullable: true
+        passNumber:
+          type: string
+          description: Number in the tag given to visitor
+        whomTheyMeet:
+          type: string
+          description: The person the visitor is supposed to meet
+        purposeOfVisit:
+          type: string
+          description: Purpose of the visit
+        accessibleLocations:
+          type: array
+          description: The floors and rooms that the visitor can access
+          items:
+            $ref: '#/components/schemas/Floor'
+        timeOfEntry:
+          type: string
+          description: "Time at which the visitor is supposed to check in [in UTC]"
+        timeOfDeparture:
+          type: string
+          description: "Time at which the visitor is supposed to check out [in UTC]"
+      additionalProperties: false
+      description: Payload for adding a new visit.
+    AddVisitorPayload:
+      required:
+      - contactNumber
+      - email
+      - name
+      - nicHash
+      - nicNumber
+      type: object
+      properties:
+        nicHash:
+          type: string
+          description: Nic Hash of the visitor
+        name:
+          type: string
+          description: Name of the visitor
+        nicNumber:
+          type: string
+          description: NIC number of visitor
+        contactNumber:
+          type: string
+          description: Working phone number of visitor
+        email:
+          type: string
+          description: Email of the visitor
+          nullable: true
+      additionalProperties: false
+      description: "[Database] Insert record for visitor."
+    AuditFields:
+      required:
+      - createdBy
+      - createdOn
+      - updatedBy
+      - updatedOn
+      type: object
+      properties:
+        createdBy:
+          type: string
+          description: Who created the visitor
+        createdOn:
+          type: string
+          description: When the visitor was created
+        updatedBy:
+          type: string
+          description: Who updated the visitor
+        updatedOn:
+          type: string
+          description: When the visitor was updated
+      additionalProperties: false
+      description: Database audit fields
+    Employee:
+      required:
+      - employeeId
+      - firstName
+      - jobRole
+      - lastName
+      - workEmail
+      type: object
+      properties:
+        firstName:
+          type: string
+          description: Employee first name
+        lastName:
+          type: string
+          description: Employee last name
+        employeeId:
+          type: string
+          description: Employee ID
+        employeeThumbnail:
+          type: string
+          description: Employee thumbnail
+          nullable: true
+        workEmail:
+          type: string
+          description: Employee work emails
+        jobRole:
+          type: string
+          description: Employee job role
+      additionalProperties: false
+      description: Employee information.
+    ErrorPayload:
+      required:
+      - message
+      - method
+      - path
+      - reason
+      - status
+      - timestamp
+      type: object
+      properties:
+        timestamp:
+          type: string
+        status:
+          type: integer
+          format: int64
+        reason:
+          type: string
+        message:
+          type: string
+        path:
+          type: string
+        method:
+          type: string
+    Floor:
+      required:
+      - floor
+      - rooms
+      type: object
+      properties:
+        floor:
+          type: string
+          description: Floor
+        rooms:
+          type: array
+          description: Array of rooms
+          items:
+            type: string
+      additionalProperties: false
+      description: "[Database] Floor record."
+    UserInfo:
+      type: object
+      description: Response for fetching user information.
+      allOf:
+      - $ref: '#/components/schemas/Employee'
+      - required:
+        - privileges
+        type: object
+        properties:
+          privileges:
+            type: array
+            description: Array of privileges assigned to the user
+            items:
+              type: integer
+              format: int64
+    Visit:
+      type: object
+      description: Visit record.
+      allOf:
+      - $ref: '#/components/schemas/AddVisitPayload'
+      - $ref: '#/components/schemas/AuditFields'
+      - required:
+        - contactNumber
+        - email
+        - id
+        - name
+        - nicNumber
+        type: object
+        properties:
+          id:
+            type: integer
+            description: Unique identifier for the visit
+            format: int64
+          name:
+            type: string
+            description: Name of the visitor
+          nicNumber:
+            type: string
+            description: NIC number of visitor
+          contactNumber:
+            type: string
+            description: Working phone number of visitor
+          email:
+            type: string
+            description: Email of the visitor
+            nullable: true
+        additionalProperties: false
+    Visitor:
+      type: object
+      description: Database record for Visitor.
+      allOf:
+      - $ref: '#/components/schemas/AddVisitorPayload'
+      - $ref: '#/components/schemas/AuditFields'
+      - type: object
+        properties: {}
+        additionalProperties: false
+    VisitsResponse:
+      required:
+      - totalCount
+      - visits
+      type: object
+      properties:
+        totalCount:
+          type: integer
+          description: The total count of visits
+          format: int64
+        visits:
+          type: array
+          description: Array of visits
+          items:
+            $ref: '#/components/schemas/Visit'
+      additionalProperties: false
+      description: Response Record for Visits

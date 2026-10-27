@@ -1,0 +1,71 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+import { useQuery } from "@tanstack/react-query";
+import { useAuthApiClient } from "@features/security/grc/shim/useAuthApiClient";
+import { BACKEND_BASE_URL } from "@features/security/grc/shim/apiConfig";
+import { extractErrorMessage } from "@features/security/grc/modules/audit/api/apiError";
+import type { RoundStatus } from "@features/security/grc/modules/audit/types/audit";
+
+export interface EvidenceFile {
+  id: number;
+  fileName: string;
+  fileType: string | null;
+  fileSize: number | null;
+  readUrl: string | null; // short-lived read SAS URL for viewing/downloading
+  // Who uploaded this file, and when. Not necessarily the round's submitter:
+  // "Add Files" appends to an open round, so a round can hold files from
+  // several people and several moments — see SubmittedEvidenceList.
+  createdBy: string;
+  createdByName: string;
+  createdAt: string;
+}
+
+export interface EvidenceSubmission {
+  id: number;
+  controlId: number;
+  status: RoundStatus;
+  folderPath: string | null;
+  files: EvidenceFile[] | null; // null when a submission round has no files
+  // Written justification for a round with no files (fileless completion).
+  // Empty for ordinary rounds.
+  attestation?: string;
+  createdBy: string;
+  createdByName: string;
+  createdAt: string;
+}
+
+export const evidenceQueryKey = (auditId: number, controlId: number) =>
+  ["audit", "evidence", auditId, controlId] as const;
+
+/** Fetches all evidence submissions (newest first) + their files for a control. */
+export function useGetEvidence(auditId: number, controlId: number, enabled: boolean) {
+  const authFetch = useAuthApiClient();
+
+  return useQuery({
+    queryKey: evidenceQueryKey(auditId, controlId),
+    enabled,
+    queryFn: async (): Promise<EvidenceSubmission[]> => {
+      const res = await authFetch(
+        `${BACKEND_BASE_URL}/api/v1/audits/${auditId}/controls/${controlId}/evidence`,
+      );
+      if (!res.ok) {
+        throw new Error(await extractErrorMessage(res, `Failed to load evidence (${res.status})`));
+      }
+      return res.json() as Promise<EvidenceSubmission[]>;
+    },
+  });
+}

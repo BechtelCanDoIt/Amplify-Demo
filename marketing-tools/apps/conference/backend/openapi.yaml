@@ -1,0 +1,2963 @@
+# OpenAPI spec for the conference backend — the single source of truth for the
+# reshaped API (see .claude/PLAN.md). The frontend should generate its types
+# from this file instead of hand-writing interfaces, which eliminates the
+# number-vs-string id mismatch class of bug (FE.md 3.2).
+#
+# Conventions locked across every endpoint:
+#   - camelCase JSON, string ids everywhere, ISO-8601 instants WITH a real
+#     offset (never a naive/Z string).
+#   - Collections are always arrays (never null); optional scalars are omitted
+#     when empty (never ""). The exception is the AI-relayed collections
+#     explicitly marked `nullable` below, which this backend passes through
+#     without normalising a missing array to an empty one.
+#   - Timestamps are anchored to the event's `timezone` (also in the payload).
+#   - Five text fields carry sanitized rich-text HTML, not plain text:
+#     Session.title, Session.description, Activity.description, and
+#     PickedForYouSession.title/description -- the last two because the
+#     recommender echoes this backend's own agenda text back verbatim. The event
+#     platform runs those through an allowlist on write (`internal/sanitize`.
+#     RichText: p, br, strong, em, u, s, ul, ol, li, blockquote, a[href], and
+#     span carrying a ql-* class or a font-weight style) and strips every other
+#     text field it stores to plain text. This backend passes all of them
+#     through untouched, so a client must render these three as HTML and can
+#     treat the rest as text. The allowlist is the writer's Quill toolbar, so
+#     the markup is bounded, but it is not sanitized again here — a client that
+#     interpolates these into the DOM inherits the writer's allowlist as its
+#     own trust boundary.
+#
+# Scope: the conference-data, attendee-profile, attendee-search, connection,
+# recommendation, shop, QR/coin, feedback, favorites, leaderboard, notification
+# and AI-assistant routes -- every route registered in cmd/server/main.go is now
+# documented here. An endpoint absent from this file is undocumented, not
+# unimplemented.
+#
+# The AI routes proxy a separate service and are documented as this backend
+# emits them, not as that service does: the two disagree on purpose. Where a
+# field is this backend's own enrichment rather than a relay, its description
+# says so.
+openapi: 3.0.3
+info:
+  title: WSO2Con Conference Backend
+  version: "1.0.0"
+  description: >
+    Conference data, attendee search, networking, recommendation and
+    AI-assistant endpoints.
+    All routes except /health require the `x-jwt-assertion` header.
+servers:
+  - url: /
+security:
+  - jwtAssertion: []
+tags:
+  - name: sessions
+  - name: events
+  - name: speakers
+  - name: attendees
+  - name: connections
+  - name: recommendations
+  - name: ai
+  - name: shop
+  - name: coin
+  - name: feedback
+  - name: favorites
+  - name: leaderboard
+  - name: notifications
+
+paths:
+  /health:
+    get:
+      tags: [events]
+      summary: Liveness/readiness probe (unauthenticated)
+      security: []
+      responses:
+        "200": { description: "OK" }
+
+  /sessions/current:
+    get:
+      tags: [sessions]
+      summary: All sessions in the current conference, ordered by start time
+      description: >
+        Returns every session in the latest-start_date conference as Session
+        objects (the same shape the agenda endpoints use), ordered by start
+        time. Includes speaker-less sessions (breaks/registration). Carries
+        ETag/Cache-Control validators.
+      responses:
+        "200":
+          description: "OK"
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Session" }
+        "304": { description: "Not Modified" }
+
+  /sessions/{id}:
+    get:
+      tags: [sessions]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "304": { description: "Not Modified" }
+        "404": { description: "No such session" }
+
+  /events:
+    get:
+      tags: [events]
+      parameters:
+        - name: previous
+          in: query
+          required: false
+          schema: { type: boolean }
+          description: "When `true`, returns only non-current events (history modal)."
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Event" }
+        "304": { description: "Not Modified" }
+
+  /events/current:
+    get:
+      tags: [events]
+      description: >
+        The current conference (the one with the latest start_date), as a single
+        object rather than an array. Clients read `id` from this and pin later
+        requests to it.
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Event" }
+        "304": { description: "Not Modified" }
+        "404": { description: "No conference is configured" }
+
+  /events/{eventId}/agendas:
+    get:
+      tags: [events]
+      parameters:
+        - name: eventId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|current)$'
+          description: "A conference_config id, or the literal `current`."
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/EventAgenda" }
+        "304": { description: "Not Modified" }
+        "400":
+          description: >-
+            eventId is neither a UUID nor the literal "current". conference_config.id
+            is a uuid column, so this used to reach the query and surface as a 500.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                message: eventId must be a valid UUID
+
+  /event-agendas:
+    get:
+      tags: [events]
+      description: "Query-param variant of the agenda resource."
+      parameters:
+        - { name: isCurrent, in: query, required: false, schema: { type: boolean } }
+        - name: eventId
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+      responses:
+        "200":
+          description: "OK"
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/EventAgenda" }
+        "304": { description: "Not Modified" }
+        "400":
+          description: >-
+            Neither eventId nor isCurrent=true supplied, or the supplied eventId
+            is not a UUID (the latter was previously a 500).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                message: eventId must be a valid UUID
+
+  /speakers:
+    get:
+      tags: [speakers]
+      parameters:
+        - name: eventId
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+          description: "Restrict to speakers with a session in this conference (and show only those sessions)."
+        - name: q
+          in: query
+          required: false
+          schema: { type: string }
+          description: >-
+            Case-insensitive substring search over the speaker's name, title and
+            company (all matched server-side after decryption). Company is searched
+            but not returned by this endpoint.
+      responses:
+        "200":
+          description: "OK, ordered by name"
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SpeakerSummary" }
+        "304": { description: "Not Modified" }
+        "400":
+          description: >-
+            eventId was supplied and is not a UUID. It is optional; the check fires
+            only when present.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                message: eventId must be a valid UUID
+
+  /speakers/{id}:
+    get:
+      tags: [speakers]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: "OK"
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Speaker" }
+        "304": { description: "Not Modified" }
+        "400":
+          description: "id is not a UUID (previously a 500 from the cast)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                message: id must be a valid UUID
+        "404": { description: "No such visible speaker" }
+
+  /attendees:
+    post:
+      tags: [attendees]
+      summary: Create or replace the caller's own attendee profile
+      description: >
+        Both identity fields come from the caller's JWT -- idp_uuid from `sub`,
+        email from the `email` claim. A body `email` is accepted by the decoder
+        and ignored, so a caller cannot create or overwrite another attendee's
+        row. The write is an upsert scoped to the caller's email; when that email
+        already carries a row bound to a different idp_uuid the upsert is a no-op
+        and the route answers 409 rather than claiming a write that did not happen.
+        Returns no body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AttendeeInsert" }
+      responses:
+        "201": { description: "Created or updated. No body." }
+        "400":
+          description: >-
+            Malformed JSON body, or a missing/empty firstName or lastName. An empty
+            POST used to create an email='' row against the caller's UNIQUE idp_uuid
+            and wedge the account permanently.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                message: invalid request body
+        "401":
+          description: >-
+            No authentication, or the token carries no `email` claim (email is the
+            key this row is written under).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                message: authenticated user has no email claim
+        "409":
+          description: >-
+            The caller's email already has an attendee row bound to a different
+            idp_uuid. Nothing was written.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                message: attendee already registered to another account
+        "500":
+          description: "Internal error"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+    patch:
+      tags: [attendees]
+      summary: Update the authenticated attendee's own profile
+      description: >
+        There is no target parameter: the row is selected by the JWT `email`
+        claim. The route previously took a required `?email=` query parameter that
+        chose both the row to patch and the full decrypted row to return, with no
+        comparison against the token; any `?email=` a client still sends is now
+        ignored. Nil fields are left unchanged; the patched row is returned.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AttendeePatch" }
+      responses:
+        "200":
+          description: "The patched row, decrypted"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Attendee" }
+        "400":
+          description: "Malformed JSON body"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: >-
+            The caller has no attendee row. (Before the parameter was dropped this
+            meant "no row for the queried email".)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                message: attendee not found
+        "500":
+          description: "Internal error"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /attendees/me:
+    get:
+      tags: [attendees]
+      summary: The caller's own attendee row
+      description: >
+        Looked up by the JWT `email` claim. Unlike POST /attendees/search this
+        returns the caller's own `memberId` and `qrUri` -- qrUri is the check-in
+        credential and belongs only to its owner.
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Attendee" }
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: "The caller has no attendee row"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /user-profile:
+    get:
+      tags: [attendees]
+      summary: Display profile for the caller (name, avatar, QR)
+      description: >
+        A projection over the caller's attendee row plus JWT name claims. There is
+        no fallback to a JWT-only response: a caller with no attendee row gets 404.
+        `imageUrl` is a hardcoded default avatar, never derived from the token.
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Profile" }
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: "The caller has no attendee row"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /attendees/search:
+    post:
+      tags: [attendees]
+      summary: Cursor-paginated attendee search (server-side filtering)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                uuid: { type: string, description: "Optional single-attendee lookup by idp uuid." }
+                query: { type: string, description: "Case-insensitive substring over name/company/title (decrypted server-side)." }
+                cursor: { type: string, description: "Opaque nextCursor from a prior page." }
+                limit:
+                  type: integer
+                  default: 20
+                  maximum: 100
+                  description: >-
+                    The maximum is clamped, not rejected: the repository caps a
+                    larger value at 100 and serves the request, and 0 (or an
+                    omitted limit) falls through to the default. Only a negative
+                    limit is refused, with a 400.
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AttendeeSearchResult" }
+        "400": { description: "Absent or malformed JSON body, invalid cursor, or negative limit" }
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: "Internal error"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /users/me/connections:
+    get:
+      tags: [connections]
+      summary: The caller's connections and pending requests
+      description: >
+        Unchanged in shape, but every entry now carries `connectionId`. That id
+        is the only handle on the accept and delete routes, so a client that
+        drops it cannot act on anything it just listed.
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserConnectionsInfo" }
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: "Internal error"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+    post:
+      tags: [connections]
+      summary: Send a connection request
+      description: >
+        **Breaking change.** This route used to take `{ userId, status }` and do
+        request, accept and reject depending on the `status` int in the body.
+        That shape is gone: a caller could name the transition they wanted, so
+        a requester could send `status: 0` then `status: 1` and land in the
+        target's connections with no action by the target. Each transition now
+        has its own route, and the only id ever read from a body is `targetId`
+        -- the requester is always the JWT `sub`.
+
+
+        Creates a `pending` connection. Idempotent: re-sending for a pair that
+        already has a connection returns the existing one unchanged rather than
+        creating a second row, so a retry or a double-tap cannot produce the
+        mirrored `A->B` / `B->A` pair the old directional key allowed. The
+        target's attendee row is resolved and the row written in one
+        transaction, so a 404 leaves nothing behind.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ConnectionRequest" }
+      responses:
+        "201":
+          description: >-
+            The other party, enriched from their attendee profile -- the same
+            shape and the same fields GET returns for that connection. `status`
+            is the connection's real state, which for an existing accepted pair
+            is `accepted`, not `pending`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConnectionUserInfo" }
+        "400":
+          description: >-
+            Missing or empty `targetId`, malformed body, or `targetId` equal to
+            the caller. A self-connection is refused by the handler and by a
+            CHECK constraint on the table, so it cannot be written by any path.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                message: cannot connect to yourself
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: >-
+            No attendee row for `targetId`. Resolved inside the same transaction
+            as the write, so a 404 never leaves an orphan row.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                message: attendee not found
+        "500":
+          description: "Internal error"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+  /users/me/connections/{connectionId}/accept:
+    post:
+      tags: [connections]
+      summary: Accept a pending connection request
+      description: >
+        Moves `pending` to `accepted`. **Only the addressee may call this** --
+        the person who received the request, never the one who sent it. Because
+        the route names the transition, that is one authorization check on one
+        endpoint rather than a branch inside a generic writer.
+
+
+        There is no route back: nothing moves an accepted connection to pending.
+        The old endpoint allowed it, so either party could silently downgrade an
+        established connection.
+      parameters:
+        - name: connectionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: "`connectionId` from GET /users/me/connections."
+      responses:
+        "200":
+          description: "The other party -- the requester -- with `status: accepted`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConnectionUserInfo" }
+        "400":
+          description: "`connectionId` is not a UUID."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          description: >-
+            The caller is the *requester* of this connection. Only the addressee
+            may accept.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: >-
+            No such connection, or the caller is not a party to it. The two are
+            deliberately indistinguishable: answering 403 to a stranger would
+            confirm that the id exists.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: >-
+            The connection is already accepted. The caller is its addressee and
+            the request was legitimate; it was replayed or lost a race.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: "Internal error"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+  /users/me/connections/{connectionId}:
+    delete:
+      tags: [connections]
+      summary: Decline, withdraw, or remove a connection
+      description: >
+        One route for all three, callable by **either party** at either state:
+        the addressee declining a request, the requester withdrawing one, and
+        either side removing an established connection are the same operation.
+
+
+        The row is deleted, not marked declined. The pair therefore returns to
+        having no relationship and can connect again later -- a stored
+        `declined` state would never appear in any response yet would silently
+        no-op every future request between those two people, because the
+        re-request conflicts on the pair's unique index.
+      parameters:
+        - name: connectionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: "`connectionId` from GET /users/me/connections."
+      responses:
+        "204":
+          description: "Deleted. No body."
+        "400":
+          description: "`connectionId` is not a UUID."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: >-
+            No such connection, or the caller is not a party to it -- including
+            a repeated delete of one already removed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: "Internal error"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+  /agenda/recommendations:
+    get:
+      tags: [recommendations]
+      summary: Personalized "Picked for You" sessions, day-associated server-side
+      description: >
+        Proxies the external picked-for-you service and enriches each item with
+        this backend's real `dayId` (conference_days uuid) so the client no
+        longer intersects recommendation ids against the loaded agenda.
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/PickedForYouSession" }
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: >-
+            The picked-for-you service could not be reached, or failed. The
+            day-association step is best-effort and never causes this -- a failed
+            lookup returns the un-enriched array with a 200.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /users/me/matches:
+    get:
+      tags: [recommendations]
+      summary: Attendees the match-maker suggests the caller should meet
+      description: >
+        Proxies the external match-maker and swaps each item's `email` for this
+        backend's own attendee `uuid`, so a client never handles another
+        attendee's address. Someone the recommender named but this backend has
+        no attendee row for is still returned, with `uuid` as "" -- dropping the
+        row would silently shrink a list the recommender already reasoned about,
+        and the reason text is worth showing either way.
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/MatchedUser" }
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: >-
+            The match-maker could not be reached, or an attendee lookup failed
+            for a reason other than not-found. Partial results are discarded
+            rather than returned.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /o2bar/recommendations:
+    get:
+      tags: [recommendations]
+      summary: O2Bar engineers to talk to, from the stored profile alone
+      description: >
+        The unprompted form: the recommender ranks engineers against the
+        profile POST /users/profile seeded, with no question to go on. Items
+        are enriched with the engineer's attendee `uuid` the same way
+        /users/me/matches is, but `email` is kept here -- booking a slot means
+        writing to the engineer directly.
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/O2BarRecommendation" }
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: >-
+            The recommender could not be reached, or an attendee lookup failed
+            for a reason other than not-found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+    post:
+      tags: [recommendations]
+      summary: O2Bar engineers to talk to, ranked against a typed question
+      description: >
+        Same response shape as the GET, ranked against `question` rather than
+        the stored profile alone. Answers 201, not 200 -- a legacy convention
+        this route keeps even though it creates nothing. The body is required
+        even when the attendee typed nothing: send `{}`, because an absent body
+        is a 400 rather than a fallback to the GET's behaviour.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/O2BarRecommendationInput" }
+      responses:
+        "201":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/O2BarRecommendation" }
+        "400": { description: "Absent or malformed JSON body" }
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: >-
+            The recommender could not be reached, or an attendee lookup failed
+            for a reason other than not-found.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /qr/scan:
+    post:
+      tags: [coin]
+      summary: Redeem a QR code for O2C
+      description: >
+        Runs the coin-award workflow for the scanned code: the caller must be a
+        registered attendee, must not already have scanned this code, and (for a
+        session code) the session must have started and its scan window must still
+        be open. Returns no body on success -- the award is asynchronous and shows
+        up on GET /qr/summary.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/QrScanRequest" }
+      responses:
+        "200": { description: "Scan accepted. No body." }
+        "400":
+          description: >-
+            Malformed body; a `qrId` that is not a UUID (coin_allocation.qr_id is a
+            uuid column, so this used to reach the query and surface as a 22P02 cast
+            error, i.e. a 500 for bad input); an already-scanned code; no wallet for
+            the caller; or a session that has not started or whose scan window has
+            closed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                message: qrId must be a valid UUID
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          description: "The caller is not a registered attendee, or is a WSO2 employee and ineligible."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: "Internal error"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /qr/history:
+    get:
+      tags: [coin]
+      summary: The caller's O2C allocation history
+      description: >
+        One entry per award, newest first. Covers every EventType -- GENERAL,
+        SESSION and O2BAR -- where it previously filtered to GENERAL only, so
+        session and O2 Bar awards were earned but never shown. `eventTypeName`
+        falls back to the event type itself ("SESSION", "O2BAR") for rows whose
+        stored event_data carries no label; it was previously always present
+        because only GENERAL rows were returned. Always an array, never null.
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/CoinAllocationHistory" }
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: "Internal error"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /qr/summary:
+    get:
+      tags: [coin]
+      summary: The caller's pending and transferred O2C totals
+      description: >
+        Same widened scope as /qr/history: every EventType counts, not just
+        GENERAL. A balance that omitted SESSION and O2BAR awards disagreed with
+        the wallet.
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CoinAllocationSummary" }
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: "Internal error"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /feedback:
+    post:
+      tags: [feedback]
+      summary: Submit session or event feedback
+      description: >
+        `feedbackType` selects which target is stored, and only one is ever
+        written: a SESSION submission stores the given `sessionId`, an EVENT
+        submission resolves the current conference server-side and stores its id,
+        ignoring any `sessionId` sent alongside. Returns no body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FeedbackRequest" }
+      responses:
+        "201": { description: "Stored. No body." }
+        "400":
+          description: >-
+            Malformed body; a `feedbackType` outside {SESSION, EVENT}; a missing or
+            out-of-range `rating`; or a SESSION submission with no `sessionId` or a
+            `sessionId` that is not a UUID. A SESSION submission with no sessionId
+            used to be a 500.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                message: sessionId is required for session feedback
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: >-
+            Internal error, including an EVENT submission made while no current
+            conference exists.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /app-configs:
+    get:
+      tags: [events]
+      summary: Key/value app configuration
+      description: >
+        Includes the cache-invalidation signal, whose key is the snake_case
+        literal `cache_version` (see .claude/PLAN.md Phase G) -- this file
+        previously called it `cacheVersion`, which no row has ever used; the
+        client maps it to a camelCase name of its own. Rows are returned verbatim
+        with their four audit columns, which the camelCase-JSON convention at the
+        top of this file does cover (`createdBy`/`createdOn`/`updatedBy`/
+        `updatedOn`) but the `key` values it does not: keys are opaque data, not
+        field names. No write route exists in this service; values are seeded via
+        SQL. Always an array, never null.
+        One entry is synthetic rather than an app_config row: when
+        SHOP_MASTER_WALLET_ADDRESS is set the handler appends a
+        `merchantWalletAddress` entry to the end of the list. Its key is
+        camelCase where every stored key is snake_case, and it carries the
+        zero values of the audit columns -- `createdBy`/`updatedBy` as "" and
+        `createdOn`/`updatedOn` as "0001-01-01T00:00:00Z" -- because the model
+        omits none of them. Read the audit columns as absent on that entry.
+        `is_shop_hidden` (`"1"` | `"0"`, default `"0"`) is always present, row
+        or no row: it is seeded by migrations/016 and, when the table does not
+        hold it, synthesised as `"0"` with the same zero-valued audit columns.
+        `"1"` means the microapp removes the Shop tab from the tab bar, gives
+        its slot to the AI assistant, and drops the floating assistant button
+        because the tab replaces it. It is presentational only -- it gates no
+        route and changes no other response -- and is orthogonal to
+        `is_shop_enabled`, which is the flag that closes the shop routes (503
+        plus coming-soon copy); a shop can be enabled and still hidden. It is
+        deliberately not spelled `is_shop_<x>_enabled`, so that it is not
+        picked up as a feature flag.
+        One key is stored but deliberately never returned:
+        `feature_gate_bypass_emails`, the allowlist of callers whose requests
+        reach a switched-off feature's routes instead of the 503 the feature
+        gate would otherwise answer. Its value is a list of real email
+        addresses and this endpoint answers every authenticated attendee, so
+        the handler drops the row rather than blanking it -- a client sees the
+        key exactly the way it already sees an unseeded one, and nothing on the
+        client reads it. Inspect it with SQL.
+        That row does, however, change what a listed caller is told about every
+        other feature: this response is per caller. To an address on the
+        allowlist, every `is_<feature>_enabled` key reports `"1"` whatever the
+        row says, so the microapp stops hiding the screens whose routes the
+        feature gate is already letting that caller through; to everybody else
+        the stored value is returned unchanged. It is the client-side half of
+        the same exemption -- without it the allowlist opens the endpoints
+        behind an unannounced feature while the app still hides the screen in
+        front of them, and the only way to click through would be to flip the
+        flag for every attendee at once. Only the `is_<feature>_enabled` keys
+        move: the coming-soon title and message rows are returned as stored (a
+        client reading `"1"` never renders them), and `is_shop_hidden` is
+        presentational, gates no route, and is left alone. Nothing else in the
+        response varies by caller, and being on the allowlist never reveals
+        who else is: the row itself stays dropped.
+        Consequence for caching: this response is never stored. It answers
+        `Cache-Control: no-store` and carries no `ETag`, unlike the routes
+        marked cacheable elsewhere in this file -- keying a shared cache on the
+        path alone would replay one caller's answer about which screens they
+        may see to a different caller.
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AppConfig" }
+
+  /activities:
+    get:
+      tags: [events]
+      summary: Venue amenities on the General page
+      description: >
+        Sourced from con_activities joined to con_activity_hours (upstream
+        migration 029), scoped to the current conference. These are the things
+        open at the venue while the agenda runs -- an O2 Bar, an FDE booth, a
+        registration desk. They previously came from the shared sessions table
+        where kind='activity' (upstream migration 021); 029 split that kind,
+        which was carrying both these and the timed full-width bars (Networking
+        Event, Speaker Reception, Conference Party) that belong in the printed
+        agenda export. One kind could not answer "does the export publish this"
+        both ways, so the amenities moved to their own tables and this endpoint
+        followed them -- 'activity' now means only the timed bars, which are
+        served as sessions, not here.
+        One entry per *sitting*: an amenity open on two days is two entries
+        sharing a name, and `id` is the opening-window's id so it stays unique
+        across them. The array is flat and the client groups by name, unchanged
+        from before 029. Ordered by con_activities.position, then name
+        case-insensitively, then day and start of window -- position is the
+        content team's arrangement of the page (upstream 029, edited in the admin
+        Activities page) and defaults to 0, so data entered before that control
+        existed falls through to the name. An activity-level key leads because
+        the client's group-by preserves receive order, which keeps one amenity's
+        sittings contiguous; ties between windows opening at the same minute
+        break on the window id so the order is stable between requests.
+        Times are wall-clock minutes from midnight upstream (the unit
+        conference_days uses, not the session slot grid), anchored in
+        conference_config.timezone.
+        `location` is the conference's own venue (conference_config.venue_name /
+        venue_address, upstream migration 018), so it is the same on every
+        activity -- upstream models no per-activity location. It is omitted
+        entirely while the venue name is unset.
+        Returns an empty array, not an error, against a database below upstream
+        029: migrations are applied by hand across the two repos with no
+        ordering guarantee, so the tables' presence is probed and the read is
+        skipped when they are absent.
+        Carries ETag/Cache-Control validators.
+      responses:
+        "200":
+          description: "OK"
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Activity" }
+        "304": { description: "Not Modified" }
+
+  /wallets/balances/me:
+    get:
+      tags: [shop]
+      summary: The caller's wallet address and O2C balance
+      description: >
+        Pure pass-through over two external services, no database involvement.
+        The upstream balance arrives as a quoted decimal string and is emitted
+        here as a number.
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [walletAddress, balance]
+                properties:
+                  walletAddress: { type: string }
+                  balance: { type: number }
+        "404": { description: "The caller has no wallet" }
+
+  /shops/items:
+    get:
+      tags: [shop]
+      summary: The purchasable catalog for the current event
+      description: >
+        An envelope, not a bare array: the client needs to know whether the shop
+        is open and which event the catalog belongs to, and neither is derivable
+        from the item list. Only VISIBLE items are returned, so a hidden item is
+        unbuyable rather than merely undisplayed. Items are still returned when
+        the shop is closed, so past orders' lines can be resolved.
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ShopCatalog" }
+        "304": { description: "Not Modified" }
+
+  /shops/orders/me:
+    get:
+      tags: [shop]
+      summary: The caller's own order history, newest first
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ShopOrder" }
+
+  /shops/checkout:
+    post:
+      tags: [shop]
+      summary: Create a PENDING order and reserve its stock
+      description: >
+        The order row, its lines, and one conditional stock decrement per line are
+        a single transaction: a shortfall on any line rolls the whole basket back.
+        `totalCost` and `eventId` are accepted and ignored -- the total is
+        recomputed from live prices and the event is resolved server-side. A
+        replayed `idempotencyKey` returns the original order without a second
+        write.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CheckoutRequest" }
+      responses:
+        "200":
+          description: "Order created (or an idempotent replay of one)"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CheckoutResponse" }
+        "400":
+          description: >
+            Validation failure, or a stock/availability/per-user-limit rejection.
+            Stock and limit rejections carry `itemId` and `availableQuantity` so
+            the client can repair the offending cart line; an unavailable item
+            carries `itemId` only, since it is not purchasable at any quantity.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CheckoutStockError" }
+        "409": { description: "The shop is closed" }
+
+  /shops/checkout/confirm:
+    post:
+      tags: [shop]
+      summary: Verify an order's on-chain payment and confirm it
+      description: >
+        The order is locked FOR UPDATE and re-read, and verification runs while
+        that lock is held, so two concurrent confirms cannot both settle. The
+        payment must be a `transfer` to the configured master wallet for exactly
+        the order's stored total, and must have succeeded. Every verification
+        failure returns the same opaque message; the reason is logged only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [orderId, transactionHash]
+              properties:
+                orderId: { type: string }
+                transactionHash: { type: string }
+      responses:
+        "200":
+          description: "Order confirmed"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CheckoutResponse" }
+        "400": { description: "Unknown order, reused transaction hash, or failed verification" }
+        "403": { description: "The order belongs to another user" }
+        "409": { description: "The order has already been processed" }
+        "503":
+          description: >-
+            Order confirmation is unavailable because the deployment has no
+            merchant wallet configured. The order is left PENDING and unchanged;
+            the same order can be confirmed once the deployment is fixed. This
+            was previously a 500. Clients must not retry the same payment on a
+            tight loop.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                message: >-
+                  Order confirmation is temporarily unavailable. Your order is
+                  unchanged; please try again later.
+        "500":
+          description: "Genuine fault while confirming"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /ai-maintenance-status:
+    get:
+      tags: [ai]
+      summary: Which AI features the client should offer
+      description: >
+        Advisory only, and the one route these flags describe. Nothing else on
+        the server is gated by them -- the six other AI routes serve normally
+        whichever way each flag is set, so a client that ignores this endpoint
+        gets working AI features rather than errors. It exists so a feature can
+        be pulled from the UI without a redeploy. Every flag defaults to false,
+        which means a backend deployed without the AI environment set reports
+        the features off rather than reporting them on and failing later.
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AIFeatureStatus" }
+
+  /users/profile:
+    post:
+      tags: [ai]
+      summary: Seed the caller's personalization profile
+      description: >
+        Writes the profile that the match-maker, the O2Bar recommender and
+        picked-for-you all read; none of them return anything useful until this
+        has run once. The AI service's response is relayed verbatim -- status,
+        content type and body -- so this is the one route whose failures reach
+        the client in that service's words rather than this backend's, and the
+        status below is the one it chose. This backend always sends the AI
+        service `override: true`, so re-posting an existing profile re-researches
+        it and replaces the stored row rather than reporting a conflict: the
+        response is another 201 with `created` true and a new `id`. The AI
+        service's already-exists reply is therefore unreachable through this
+        route, and a client may safely re-post on every launch.
+        The request body's `email` is ignored: it is overwritten with the
+        caller's JWT email before the relay (a mismatch is logged, not
+        rejected), and the AI service upserts on that key, so a caller cannot
+        target another attendee's profile.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PersonalizedProfileRequest" }
+      responses:
+        "201":
+          description: "Profile created, or already present"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PersonalizedProfileResponse" }
+        "400": { description: "Absent or malformed JSON body" }
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: >-
+            The personalize agent service could not be reached. Only a failure of
+            the call itself is reported this way; a 5xx the service itself
+            returned is relayed under `default` below.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        default:
+          description: >-
+            The AI service's own response, relayed verbatim -- its status code,
+            its Content-Type and its body, undecoded. Any status it chooses can
+            therefore appear here, including 4xx and 5xx ones, and the body is
+            that service's shape rather than this file's `ErrorResponse`.
+
+  /assistant/chat:
+    post:
+      tags: [ai]
+      summary: Ask the conference assistant a question
+      description: >
+        Stateless: the client owns the transcript and replays it in `history`
+        on every turn, so nothing is kept between calls and an omitted history
+        opens a fresh conversation. Answers 201, not 200 -- the same legacy
+        convention as the O2Bar POST.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChatRequest" }
+      responses:
+        "201":
+          description: "OK"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChatResponse" }
+        "400": { description: "Absent or malformed JSON body" }
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: "The chat service could not be reached, or failed."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /users/me/favorites:
+    get:
+      tags: [favorites]
+      summary: The caller's favorited sessions, as references
+      description: >
+        Returns the caller's favorites as references -- a session id and when it
+        was added -- never a stored snapshot of session fields, so the client
+        resolves each against live session data and a session edit shows through
+        automatically. Always an array, never null.
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FavoritesList" }
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: "Internal error"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /users/me/favorites/{sessionId}:
+    put:
+      tags: [favorites]
+      summary: Favorite a session
+      description: >
+        Idempotent: favoriting a session already favorited succeeds with 204
+        rather than erroring (the write is an INSERT ... ON CONFLICT DO NOTHING).
+        Returns no body.
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: "The session to favorite. Validated as a UUID before the query."
+      responses:
+        "204": { description: "Favorited (or already was). No body." }
+        "400":
+          description: >-
+            `sessionId` is not a UUID. It is validated before the query, so a
+            malformed value is a 400, not a Postgres 500.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                message: sessionId must be a valid UUID
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: "Internal error"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+    delete:
+      tags: [favorites]
+      summary: Remove a session from favorites
+      description: >
+        Idempotent: removing a session that is not favorited succeeds with 204
+        (the DELETE affects zero rows). Returns no body.
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: "The session to unfavorite. Validated as a UUID before the query."
+      responses:
+        "204": { description: "Removed (or was not favorited). No body." }
+        "400":
+          description: "`sessionId` is not a UUID."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                message: sessionId must be a valid UUID
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: "Internal error"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /leaderboard:
+    get:
+      tags: [leaderboard]
+      summary: Top attendees by O2C earned, for the current conference
+      description: >
+        Ordered highest-first, scoped to the current conference (resolved
+        server-side). Every entry but the caller's own has its `userId` replaced
+        with a 16-hex-character hash, so the board is not a directory of idp
+        uuids; the caller's own row keeps its real `userId` so a client can find
+        it. Names are masked to a first initial plus "***" for any attendee whose
+        preference is not "show full name" (see GET /leaderboard/preferences),
+        so the caller sees each other attendee exactly as that attendee chose to
+        appear.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 10, minimum: 1 }
+          description: >-
+            How many rows to return; defaults to 10. Must be a positive integer
+            -- a non-numeric or non-positive value is refused with a 400, not
+            clamped.
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/LeaderboardEntry" }
+        "400":
+          description: "`limit` is present but not a positive integer."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                message: invalid limit parameter
+        "500":
+          description: "Internal error"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /leaderboard/preferences:
+    get:
+      tags: [leaderboard]
+      summary: Whether the caller's full name is shown on the leaderboard
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LeaderboardPreferences" }
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: "Internal error"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+    put:
+      tags: [leaderboard]
+      summary: Set whether the caller's full name is shown on the leaderboard
+      description: >
+        `showFullName` is required and must be a boolean -- an omitted or
+        non-boolean value is a 400. The stored preference is echoed back
+        unchanged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LeaderboardPreferences" }
+      responses:
+        "200":
+          description: "The stored preference, echoed back."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LeaderboardPreferences" }
+        "400":
+          description: "Missing or non-boolean `showFullName`, or a malformed body."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                message: invalid request payload
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: "Internal error"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /users/notifications:
+    post:
+      tags: [notifications]
+      summary: Broadcast a push notification to every attendee (admin only)
+      description: >
+        Restricted to callers holding one of NOTIFICATION_ADMIN_ROLES, matched
+        against both the `groups` and the `roles` claim. That is deliberately
+        its own allow-list and not RBAC_ADMIN_ROLES: a broadcast reaches every
+        attendee's device, cannot be recalled once the notification service has
+        accepted it, and exposes no per-recipient status afterwards, so it is a
+        narrower entitlement than general event administration. An empty list
+        denies every caller. The frontend hides its trigger UI behind its own
+        role check, but this one is the real gate -- if the two disagree, the
+        button appears and the call answers 403. Delivery is delegated wholesale
+        to the external notification service, so there is no per-recipient
+        status and the response carries no body -- treat any 2xx as sent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserNotificationRequest" }
+      responses:
+        "200": { description: "Accepted for delivery. No body." }
+        "400":
+          description: >-
+            Malformed body, a missing or whitespace-only `title`, or a `title` or
+            `description` past its length bound. Lengths count bytes, not runes
+            -- non-ASCII text fits proportionally fewer characters.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                message: title is required
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          description: >-
+            The caller holds none of NOTIFICATION_ADMIN_ROLES. Holding an
+            RBAC_ADMIN_ROLES entry is not sufficient, and an unconfigured
+            allow-list answers 403 to everyone rather than falling open.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+              example:
+                message: forbidden
+        "500":
+          description: >-
+            Internal error, including a failure of the external notification
+            service.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /qr-codes:
+    get:
+      tags: [coin]
+      summary: Generated QR codes from the external QR portal
+      description: >
+        The full catalog for a caller in a configured admin group; for every
+        other caller the list is filtered to the codes whose `info.domain`
+        matches the caller's own email domain, with `totalCount` recomputed to
+        match. A caller whose email has no single `@`-delimited domain gets an
+        empty list rather than an error.
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConferenceQrCodesResponse" }
+        "401":
+          description: "No authentication"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: "The QR portal could not be reached, or failed."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+
+  /registrant/events/current/agendas:
+    get:
+      tags:
+        - Registrant
+      summary: List current agendas for registration
+      description: Proxied to the internal Registrant backend. Returns agendas/days for the current event.
+      responses:
+        '200':
+          description: OK
+
+  /registrant/agendas/{agendaId}/attendees:
+    post:
+      tags:
+        - Registrant
+      summary: Register an attendee for an agenda
+      description: Proxied to the internal Registrant backend. Registers an attendee for a specific agenda/day.
+      parameters:
+        - name: agendaId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                attendeeId:
+                  type: string
+              required:
+                - attendeeId
+      responses:
+        '201':
+          description: Created
+
+  /admin/o2bar/engineers:
+    post:
+      tags: [o2bar]
+      summary: Register or overwrite an O2Bar engineer (admin only)
+      description: >
+        Adds an engineer to the O2Bar roster, putting them into every attendee's
+        recommendations. Restricted to callers in one of the AI_ADMIN_ROLES
+        groups; con-ai enforces nothing, so this group check is the only gate.
+        con-ai answers 201 even for an already-exists no-op, so a 201 does not by
+        itself mean a new row -- read the `created` flag. A malformed time-slot or
+        other bad field is relayed as a 400.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EngineerCreateRequest" }
+      responses:
+        "201":
+          description: "Registered (or overwritten). `created` says which."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EngineerResponse" }
+        "400": { description: "Invalid request body or a rejected engineer field." }
+        "401": { description: "Missing authentication." }
+        "403": { description: "Caller is not in an AI_ADMIN_ROLES group." }
+        "500":
+          description: >-
+            The AI service returned an unexpected error, or its gateway refused
+            this backend's own credentials. Retrying the same request will not
+            help.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: >-
+            The AI service could not be reached or timed out. Retriable -- the
+            request never got as far as being rejected.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+    get:
+      tags: [o2bar]
+      summary: List O2Bar engineers (admin only)
+      description: >
+        The O2Bar staff directory with each engineer's availability. Restricted
+        to AI_ADMIN_ROLES. Returns [] (never null) when the roster is empty.
+      responses:
+        "200":
+          description: "The roster."
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/EngineerSummary" }
+        "401": { description: "Missing authentication." }
+        "403": { description: "Caller is not in an AI_ADMIN_ROLES group." }
+        "500":
+          description: >-
+            The AI service returned an unexpected error, or its gateway refused
+            this backend's own credentials. Retrying the same request will not
+            help.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: >-
+            The AI service could not be reached or timed out. Retriable -- the
+            request never got as far as being rejected.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+  /admin/o2bar/engineers/{email}:
+    delete:
+      tags: [o2bar]
+      summary: Remove an O2Bar engineer (admin only)
+      description: >
+        Removes an engineer from every attendee's recommendations. Restricted to
+        AI_ADMIN_ROLES.
+      parameters:
+        - name: email
+          in: path
+          required: true
+          description: >-
+            The attendee or engineer address. "@" and "." need no escaping in a
+            path segment, but a percent-encoded address routes identically.
+          schema: { type: string, format: email }
+      responses:
+        "204": { description: "Removed. No body." }
+        "400": { description: "The email path segment is blank." }
+        "401": { description: "Missing authentication." }
+        "403": { description: "Caller is not in an AI_ADMIN_ROLES group." }
+        "404": { description: "No engineer holds that email." }
+        "500":
+          description: >-
+            The AI service returned an unexpected error, or its gateway refused
+            this backend's own credentials. Retrying the same request will not
+            help.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: >-
+            The AI service could not be reached or timed out. Retriable -- the
+            request never got as far as being rejected.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+  /admin/o2bar/engineers/{email}/exists:
+    get:
+      tags: [o2bar]
+      summary: Whether an address is an O2Bar engineer (admin only)
+      description: Restricted to AI_ADMIN_ROLES.
+      parameters:
+        - name: email
+          in: path
+          required: true
+          description: >-
+            The attendee or engineer address. "@" and "." need no escaping in a
+            path segment, but a percent-encoded address routes identically.
+          schema: { type: string, format: email }
+      responses:
+        "200":
+          description: "Existence answer."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExistsResponse" }
+        "400": { description: "The email path segment is blank." }
+        "401": { description: "Missing authentication." }
+        "403": { description: "Caller is not in an AI_ADMIN_ROLES group." }
+        "500":
+          description: >-
+            The AI service returned an unexpected error, or its gateway refused
+            this backend's own credentials. Retrying the same request will not
+            help.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: >-
+            The AI service could not be reached or timed out. Retriable -- the
+            request never got as far as being rejected.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+  /admin/ai-profiles:
+    post:
+      tags: [personalize]
+      summary: Create or replace an attendee's AI profile (admin only)
+      description: >
+        Writes the researched AI profile that feeds an arbitrary attendee's
+        matchmaking and picked-for-you recommendations. Unlike POST /users/profile
+        (which keys on the caller's own JWT email), the target attendee's email
+        rides in the body. Restricted to AI_ADMIN_ROLES.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminProfileCreateRequest" }
+      responses:
+        "201":
+          description: "Created (or replaced). `created` says which."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProfileResponse" }
+        "400": { description: "Invalid body, or user.email is missing." }
+        "401": { description: "Missing authentication." }
+        "403": { description: "Caller is not in an AI_ADMIN_ROLES group." }
+        "500":
+          description: >-
+            The AI service returned an unexpected error, or its gateway refused
+            this backend's own credentials. Retrying the same request will not
+            help.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: >-
+            The AI service could not be reached or timed out. Retriable -- the
+            request never got as far as being rejected.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+  /admin/ai-profiles/{email}:
+    get:
+      tags: [personalize]
+      summary: Fetch an attendee's stored AI profile (admin only)
+      description: Restricted to AI_ADMIN_ROLES. The profile document is relayed as-is.
+      parameters:
+        - name: email
+          in: path
+          required: true
+          description: >-
+            The attendee or engineer address. "@" and "." need no escaping in a
+            path segment, but a percent-encoded address routes identically.
+          schema: { type: string, format: email }
+      responses:
+        "200":
+          description: "The stored profile document."
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "400": { description: "The email path segment is blank." }
+        "401": { description: "Missing authentication." }
+        "403": { description: "Caller is not in an AI_ADMIN_ROLES group." }
+        "404": { description: "No profile stored for that email." }
+        "500":
+          description: >-
+            The AI service returned an unexpected error, or its gateway refused
+            this backend's own credentials. Retrying the same request will not
+            help.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: >-
+            The AI service could not be reached or timed out. Retriable -- the
+            request never got as far as being rejected.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+    patch:
+      tags: [personalize]
+      summary: Re-embed an attendee's AI profile from fresh LinkedIn text (admin only)
+      description: Restricted to AI_ADMIN_ROLES.
+      parameters:
+        - name: email
+          in: path
+          required: true
+          description: >-
+            The attendee or engineer address. "@" and "." need no escaping in a
+            path segment, but a percent-encoded address routes identically.
+          schema: { type: string, format: email }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminProfileUpdateRequest" }
+      responses:
+        "200":
+          description: "Updated profile document."
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "400": { description: "Invalid body, or the email query parameter is missing." }
+        "401": { description: "Missing authentication." }
+        "403": { description: "Caller is not in an AI_ADMIN_ROLES group." }
+        "404": { description: "No profile stored for that email." }
+        "500":
+          description: >-
+            The AI service returned an unexpected error, or its gateway refused
+            this backend's own credentials. Retrying the same request will not
+            help.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: >-
+            The AI service could not be reached or timed out. Retriable -- the
+            request never got as far as being rejected.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+    delete:
+      tags: [personalize]
+      summary: Delete an attendee's AI profile (admin only)
+      description: Restricted to AI_ADMIN_ROLES.
+      parameters:
+        - name: email
+          in: path
+          required: true
+          description: >-
+            The attendee or engineer address. "@" and "." need no escaping in a
+            path segment, but a percent-encoded address routes identically.
+          schema: { type: string, format: email }
+      responses:
+        "204": { description: "Deleted. No body." }
+        "400": { description: "The email path segment is blank." }
+        "401": { description: "Missing authentication." }
+        "403": { description: "Caller is not in an AI_ADMIN_ROLES group." }
+        "404": { description: "No profile stored for that email." }
+        "500":
+          description: >-
+            The AI service returned an unexpected error, or its gateway refused
+            this backend's own credentials. Retrying the same request will not
+            help.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: >-
+            The AI service could not be reached or timed out. Retriable -- the
+            request never got as far as being rejected.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+  /admin/ai-profiles/{email}/exists:
+    get:
+      tags: [personalize]
+      summary: Whether an attendee has a stored AI profile (admin only)
+      description: Restricted to AI_ADMIN_ROLES.
+      parameters:
+        - name: email
+          in: path
+          required: true
+          description: >-
+            The attendee or engineer address. "@" and "." need no escaping in a
+            path segment, but a percent-encoded address routes identically.
+          schema: { type: string, format: email }
+      responses:
+        "200":
+          description: "Existence answer."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExistsResponse" }
+        "400": { description: "The email path segment is blank." }
+        "401": { description: "Missing authentication." }
+        "403": { description: "Caller is not in an AI_ADMIN_ROLES group." }
+        "500":
+          description: >-
+            The AI service returned an unexpected error, or its gateway refused
+            this backend's own credentials. Retrying the same request will not
+            help.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: >-
+            The AI service could not be reached or timed out. Retriable -- the
+            request never got as far as being rejected.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+components:
+  securitySchemes:
+    jwtAssertion:
+      type: apiKey
+      in: header
+      name: x-jwt-assertion
+  schemas:
+    EngineerProfileInput:
+      type: object
+      description: One O2Bar engineer's expertise and availability, mirroring con-ai's EngineerCreate.
+      required: [email, name, title, domains, familiarProducts, specializeAreas, yearsOfWorkingExperience, exampleQuestions, availableTimeSlots]
+      properties:
+        email: { type: string, format: email }
+        name: { type: string, minLength: 1, maxLength: 200 }
+        title: { type: string, minLength: 1, maxLength: 200 }
+        linkedInProfileUrl: { type: string }
+        domains: { type: string, minLength: 1 }
+        familiarProducts: { type: string, minLength: 1 }
+        specializeAreas: { type: string, minLength: 1 }
+        yearsOfWorkingExperience: { type: integer, minimum: 0, maximum: 60 }
+        exampleQuestions: { type: string, minLength: 1 }
+        availableTimeSlots:
+          type: string
+          description: >
+            Slots separated by newlines, commas or semicolons. Each slot needs a
+            date: YYYY-MM-DD HH:mm-HH:mm (or a pair of ISO-8601 timestamps). An
+            undated slot is rejected upstream (a 400), because an undated slot is
+            silently dropped the next day and the engineer vanishes from every
+            recommendation.
+    EngineerCreateRequest:
+      type: object
+      required: [engineer]
+      properties:
+        engineer: { $ref: "#/components/schemas/EngineerProfileInput" }
+        override:
+          type: boolean
+          default: false
+          description: When true, overwrite an existing engineer's expertise and availability outright.
+    EngineerResponse:
+      type: object
+      required: [email, created, message]
+      properties:
+        id: { type: string }
+        email: { type: string }
+        name: { type: string }
+        created: { type: boolean, description: "False (with an explanatory message) when the engineer already existed and override was not set." }
+        message: { type: string }
+    EngineerSummary:
+      type: object
+      required: [email, name]
+      properties:
+        email: { type: string }
+        name: { type: string }
+        title: { type: string }
+        linkedInProfileUrl: { type: string }
+        availableTimeSlots:
+          type: array
+          items: { $ref: "#/components/schemas/O2BarTimeSlot" }
+    AdminProfileCreateRequest:
+      type: object
+      description: >
+        Admin attendee-profile create. Unlike PersonalizedProfileRequest, the
+        `user.email` here is the target attendee and is NOT overwritten -- it is
+        the key con-ai upserts on, so it is required.
+      required: [user]
+      properties:
+        user:
+          type: object
+          required: [email]
+          properties:
+            email: { type: string, format: email, description: "The target attendee. NOT overwritten (unlike POST /users/profile)." }
+            name: { type: string }
+            company: { type: string }
+            title: { type: string }
+            country: { type: string }
+            linkedInInfo: { type: string, description: "Free text harvested from LinkedIn (note casing: capital I in In)." }
+        override:
+          type: boolean
+          default: false
+          description: When true, replace the attendee's existing profile document.
+    AdminProfileUpdateRequest:
+      type: object
+      required: [linkedInInfo]
+      properties:
+        linkedInInfo: { type: string, minLength: 1 }
+    ProfileResponse:
+      type: object
+      required: [email, created, message]
+      properties:
+        id: { type: string }
+        email: { type: string }
+        name: { type: string }
+        company: { type: string }
+        title: { type: string }
+        created: { type: boolean }
+        message: { type: string }
+    ExistsResponse:
+      type: object
+      required: [exists]
+      properties:
+        exists: { type: boolean }
+    Session:
+      type: object
+      required: [id, kind, title, durationSlots, colorToken]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, description: "keynote | session | break | activity" }
+        title: { type: string, description: "Sanitized rich-text HTML, not plain text -- the content team writes it in a Quill editor and the marketing agenda page renders the markup. See the rich-text convention at the top of this file." }
+        description: { type: string, description: "Sanitized rich-text HTML, same allowlist and same caveat as title. Omitted when empty." }
+        category:
+          type: string
+          description: >
+            The session's topic label, resolved from track_topics via
+            sessions.topic_id (upstream migration 023). Replaces the dropped
+            sessions.category column; the key name is unchanged. Omitted against a
+            database older than upstream 023.
+        startTime: { type: string, format: date-time, description: "ISO-8601 with venue offset" }
+        endTime: { type: string, format: date-time }
+        dayId: { type: string, format: uuid }
+        trackId: { type: string, format: uuid }
+        colorToken:
+          type: string
+          enum: [red, orange, yellow, green, blue, purple, dark-blue, main]
+          description: >-
+            Names which colour the session is, without saying what that colour
+            looks like — the client owns the eight values and can define a
+            different one per light/dark appearance. This is the only colour
+            field the API publishes; the trackColor/roomColor hexes it replaced
+            were each one fixed value a theme could not reinterpret. Resolved
+            server-side as the session's room colour, else its track colour,
+            else "main" — the room owns the colour, the track is the fallback.
+            Always present: a session with no colour on either lands on "main".
+        trackGroup:
+          type: string
+          description: >-
+            Label of the track section the session sits in, e.g. "Case Studies"
+            or "Keynote Sessions" — the heading a run of sessions is grouped
+            under (track_sections.label). Absent when the session belongs to no
+            section.
+        slotIndex: { type: integer }
+        durationSlots: { type: integer }
+        roomId: { type: string, format: uuid }
+        roomName: { type: string }
+        articleUrl: { type: string }
+        articleLabel: { type: string }
+        videoUrl: { type: string }
+        videoLabel: { type: string }
+        speakers:
+          type: array
+          description: >-
+            Visible speakers on this session, resolved server-side. Present on
+            every route that serves a Session -- the single-session reads
+            (GET /sessions/{id}, GET /sessions/current) and both agenda routes
+            (GET /events/{eventId}/agendas, GET /event-agendas), which used to
+            omit it and force a per-session round trip to name a speaker. The
+            key is omitted entirely for a session with no visible speakers
+            (breaks, registration); it is never an empty array.
+          items: { $ref: "#/components/schemas/SessionSpeaker" }
+    SessionSpeaker:
+      type: object
+      required: [id, name, isModerator]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        title:
+          type: string
+          description: >-
+            Speaker's job title (speakers.title), decrypted server-side. The
+            /speakers endpoints publish this same column as "description" for
+            legacy reasons. Absent when unset.
+        company:
+          type: string
+          description: >-
+            Speaker's company (speakers.company), decrypted server-side. Rarely
+            populated upstream — the affiliation is usually only a suffix on
+            title — so treat its absence as normal and fall back to title.
+        photoUrl: { type: string }
+        isModerator: { type: boolean, description: "From the owned presentation_overlay; replaces the FE moderators.json." }
+    Event:
+      type: object
+      required: [id, name, isCurrent, timezone, startDate, endDate]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        isCurrent: { type: boolean }
+        timezone: { type: string, description: "IANA venue timezone (conference_config.timezone) the instants are expressed in." }
+        startDate:
+          type: string
+          format: date
+          description: >-
+            First venue-local day of the conference (conference_config.start_date),
+            the same column the isCurrent rule sorts on.
+        endDate:
+          type: string
+          format: date
+          description: >-
+            Last venue-local day of the conference, inclusive. There is no
+            end_date column upstream, so this is the last conference_days.date,
+            falling back to startDate for a conference whose days are not entered
+            yet. A one-day conference repeats startDate here.
+        venueName: { type: string, description: "From conference_config.venue_name; omitted when unset." }
+        venueAddress: { type: string, description: "From conference_config.venue_address; omitted when unset." }
+    EventAgenda:
+      type: object
+      required: [id, eventId, timezone, date, sessions]
+      properties:
+        id: { type: string, format: uuid }
+        eventId: { type: string, format: uuid }
+        timezone: { type: string }
+        name: { type: string }
+        date: { type: string, format: date }
+        sessions:
+          type: array
+          items: { $ref: "#/components/schemas/Session" }
+    Speaker:
+      type: object
+      description: >-
+        A speaker's full profile, returned by GET /speakers/{id} — everything
+        the speaker detail screen renders, in one document.
+      required: [id, name, bio, photoUrl, sessions]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+        bio: { type: string }
+        photoUrl: { type: string }
+        sessions:
+          type: array
+          description: >-
+            The speaker's sessions in the current conference, resolved
+            server-side. Past conferences are excluded.
+          items: { $ref: "#/components/schemas/SpeakerSession" }
+    SpeakerSummary:
+      type: object
+      description: >-
+        One row of the speaker directory, returned by GET /speakers. Carries no
+        sessions — the list never draws them; fetch GET /speakers/{id} for those.
+      required: [id, name, bio, photoUrl]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+        bio: { type: string }
+        photoUrl: { type: string }
+    SpeakerSession:
+      type: object
+      required: [id, title, colorToken]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        startTime: { type: string, format: date-time }
+        endTime: { type: string, format: date-time }
+        roomName: { type: string, description: "Absent when the session has no room." }
+        colorToken:
+          type: string
+          enum: [red, orange, yellow, green, blue, purple, dark-blue, main]
+          description: >-
+            Mirrors Session.colorToken exactly — the name of the session's
+            colour, resolved by the same room → track → "main" chain, so a
+            session shows the same colour on the speaker screen as on the
+            agenda. Always present.
+    AttendeeSearchResult:
+      type: object
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          description: "Always an array, never null. Excludes the caller's own row."
+          items: { $ref: "#/components/schemas/AttendeeSearchItem" }
+        page:
+          type: object
+          properties:
+            nextCursor: { type: string, description: "Empty when this is the last page." }
+      description: >-
+        No `total`: the text query filters over AES-GCM encrypted columns in Go,
+        so an exact filtered count would mean decrypting every attendee row.
+    Attendee:
+      type: object
+      description: >-
+        The caller's own row, as returned by GET /attendees/me and PATCH
+        /attendees. title/company/country/firstName/lastName are encrypted at
+        rest and decrypted server-side before this is built. POST
+        /attendees/search returns the narrower AttendeeSearchItem instead.
+      required: [id, isPartner, qrUri, createdOn, updatedOn]
+      properties:
+        id: { type: string, format: uuid }
+        email:
+          type: string
+          description: >-
+            Present on the caller's own record, which is the only thing this
+            schema describes. Omitted rather than empty wherever an address is
+            withheld -- see AttendeeSearchItem and ConnectionUserInfo.
+        uuid: { type: string, description: "The attendee's idp_uuid. Omitted when unset." }
+        memberId:
+          type: string
+          description: >-
+            Salesforce member id. Own row only -- POST /attendees/search never
+            carries it. Omitted when unset.
+        firstName: { type: string }
+        lastName: { type: string }
+        company: { type: string }
+        title: { type: string }
+        country: { type: string }
+        isPartner: { type: boolean }
+        profileUrl: { type: string }
+        qrUri:
+          type: string
+          description: >-
+            Check-in credential, derived from memberId. Own row only. Always
+            present as a key; empty when there is no memberId to derive it from.
+        createdBy: { type: string }
+        updatedBy: { type: string }
+        createdOn: { type: string, format: date-time }
+        updatedOn: { type: string, format: date-time }
+    AttendeeSearchItem:
+      type: object
+      description: >-
+        One POST /attendees/search hit: Attendee minus the check-in credential
+        and minus the email address.
+
+
+        `memberId` is never included -- it is the credential served as qrUri, and
+        a directory search over every other attendee is the last place it belongs
+        (audit P2). `qrUri` is still emitted as a key but is always the empty
+        string here; only GET /attendees/me and GET /user-profile carry the real
+        one.
+
+
+        **`email` is no longer returned.** Search used to hand every attendee's
+        address to any authenticated caller, which left nothing for the
+        connection state to gate: you could read the contact details of people
+        who had never accepted you, or whom you had never contacted at all. The
+        column is not even selected now. A client that was joining search hits
+        to connections on `email` must join on `uuid` instead -- it is the
+        stable identity, it is what POST /users/me/connections takes, and it was
+        always the correct key. An accepted connection still carries the address,
+        in ConnectionUserInfo.
+      required: [id, isPartner, qrUri, createdOn, updatedOn]
+      properties:
+        id: { type: string, format: uuid }
+        uuid: { type: string, description: "The attendee's idp_uuid, the key POST /users/me/connections takes, and the key to join a search hit to a connection." }
+        firstName: { type: string }
+        lastName: { type: string }
+        company: { type: string }
+        title: { type: string }
+        country: { type: string }
+        isPartner: { type: boolean }
+        profileUrl: { type: string }
+        qrUri: { type: string, description: "Always the empty string on search results." }
+        createdBy: { type: string }
+        updatedBy: { type: string }
+        createdOn: { type: string, format: date-time }
+        updatedOn: { type: string, format: date-time }
+    AttendeeInsert:
+      type: object
+      description: >-
+        POST /attendees body. Neither `uuid` nor `email` appears here: both are
+        identity and come from the caller's JWT (`sub` and `email`), never from
+        the body. A body `email` is accepted by the decoder and ignored, not
+        rejected -- sending one is not a 400.
+      required: [firstName, lastName]
+      properties:
+        firstName: { type: string, minLength: 1 }
+        lastName: { type: string, minLength: 1 }
+        title: { type: string }
+        company: { type: string }
+        country: { type: string }
+        memberId: { type: string }
+        isPartner: { type: boolean }
+        profileUrl: { type: string }
+    AttendeePatch:
+      type: object
+      description: "PATCH /attendees body. Every field is optional; omitted fields are left unchanged."
+      properties:
+        firstName: { type: string }
+        lastName: { type: string }
+        title: { type: string }
+        company: { type: string }
+        country: { type: string }
+        profileUrl: { type: string }
+    Profile:
+      type: object
+      description: "GET /user-profile response: the caller's attendee row projected for display."
+      required: [username, email, imageUrl, qrUri, isPartner]
+      properties:
+        username: { type: string, description: "The JWT given_name and family_name joined, trimmed." }
+        email: { type: string, description: "The JWT email claim." }
+        imageUrl: { type: string, description: "A hardcoded default avatar, identical for every user -- never derived from the token." }
+        qrUri: { type: string, description: "The caller's own check-in credential." }
+        isPartner: { type: boolean }
+    ConnectionRequest:
+      type: object
+      description: >-
+        POST /users/me/connections body. `targetId` is the only id this API ever
+        takes from a payload; the requester is always the JWT `sub`. There is
+        deliberately no `status`/`state` field -- a caller-settable transition is
+        what made accept-your-own-request possible. Unknown fields are ignored,
+        so a stale client still sending `status` sends a request, nothing more.
+      required: [targetId]
+      properties:
+        targetId:
+          type: string
+          description: >-
+            idp_uuid of the other attendee. Required and non-empty, and must not
+            be the caller's own id.
+    UserConnectionsInfo:
+      type: object
+      properties:
+        connections: { type: array, items: { $ref: "#/components/schemas/ConnectionUserInfo" } }
+        requestsSent: { type: array, items: { $ref: "#/components/schemas/ConnectionUserInfo" } }
+        requestsReceived: { type: array, items: { $ref: "#/components/schemas/ConnectionUserInfo" } }
+    ConnectionUserInfo:
+      type: object
+      description: >-
+        The *other* party in one connection, enriched from their attendee
+        profile. Returned both inside UserConnectionsInfo and as the body of a
+        successful request/accept.
+      required: [connectionId, userId, name, status]
+      properties:
+        connectionId:
+          type: string
+          format: uuid
+          description: >-
+            The connection row's own id, and the handle the accept and delete
+            routes address. Stable for the life of the relationship; a pair that
+            is deleted and later re-requested gets a new one.
+        userId: { type: string }
+        name: { type: string }
+        email:
+          type: string
+          description: >-
+            **Present only when `status` is `accepted`; omitted while pending.**
+            Exchanging contact details is what accepting a connection *is*, so
+            releasing the address at request time gave it away before the other
+            person had agreed to anything -- and in both directions, since a
+            pending row appears in the sender's `requestsSent` as well as the
+            recipient's `requestsReceived`. The 201 body of a freshly created
+            request therefore never carries one.
+        status:
+          type: string
+          enum: [pending, accepted]
+          description: >-
+            The connection's state, stated explicitly so a client never has to
+            infer it from which array the entry sits in. `rejected` is gone --
+            declining deletes the row.
+        profileUrl: { type: string }
+        title: { type: string }
+        company: { type: string }
+        country: { type: string }
+    PickedForYouSession:
+      type: object
+      description: >
+        External recommendation, day-associated with `dayId` server-side.
+        Deliberately the legacy session shape rather than the reshaped `Session`
+        one: the recommender owns these field names, which is also why the ids
+        are a mix of string and integer. `startTime`/`endTime` do carry a real
+        offset, but by inheritance rather than by this route's guarantee — the
+        recommender reads them from this backend's own agenda and echoes them
+        back. `title` and `description` come back the same way, which is why
+        they carry rich-text HTML that the reshaped `Session` fields also carry.
+      required:
+        [id, title, description, personalizedDescription, category, startTime,
+         endTime, isFeedbackNotified, locationId, venueId, agendaId, youtubeLink,
+         slidesLink, pdfLink, location, venue, agenda, sessionSpeakers,
+         sessionSponsors]
+      properties:
+        id: { type: string }
+        title: { type: string, description: "Sanitized rich-text HTML, echoed from the agenda -- render it, do not print it." }
+        description: { type: string, description: "Rich-text HTML on the same allowlist as `title`. Frequently empty." }
+        personalizedDescription: { type: string, description: "Why the recommender picked this session for this attendee. Plain text, unlike the two above." }
+        category: { type: string }
+        startTime: { type: string }
+        endTime: { type: string }
+        isFeedbackNotified: { type: boolean }
+        locationId: { type: string }
+        venueId: { type: string, description: "A string, while `venue.id` is an integer — the legacy shape, unaltered." }
+        agendaId: { type: integer }
+        dayId:
+          type: string
+          format: uuid
+          description: >
+            This backend's conference_days id, resolved from the
+            recommendation's `id` against marketingops.sessions. Its own
+            enrichment, not the recommender's. The key is absent when the id did
+            not resolve, and a failure of the lookup itself returns the
+            un-enriched array with a 200 rather than an error — a recommendation
+            without a day is still worth showing.
+        youtubeLink:
+          type: string
+          nullable: true
+          description: >
+            Always present, null when unset — the legacy contract, not this
+            file's omit-when-empty rule. The same holds for `slidesLink` and
+            `pdfLink`.
+        slidesLink: { type: string, nullable: true }
+        pdfLink: { type: string, nullable: true }
+        location: { $ref: "#/components/schemas/PickedForYouLocation" }
+        venue: { $ref: "#/components/schemas/PickedForYouVenue" }
+        agenda: { $ref: "#/components/schemas/PickedForYouAgenda" }
+        sessionSpeakers:
+          type: array
+          nullable: true
+          items: { $ref: "#/components/schemas/PickedForYouSessionSpeaker" }
+          description: >-
+            Relayed from the recommender untouched, so null rather than [] when
+            it sends none; the key itself is always present.
+        sessionSponsors:
+          type: array
+          nullable: true
+          items: { type: object, additionalProperties: true }
+          description: >-
+            Free-form; this backend relays the elements without decoding them,
+            and null rather than [] when the recommender sends none.
+    PickedForYouLocation:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        address: { type: string }
+        floorPlanUrl: { type: string }
+    PickedForYouVenue:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        geoCoordinates: { type: string }
+    PickedForYouAgenda:
+      type: object
+      properties:
+        id: { type: integer }
+        eventId: { type: integer }
+        name: { type: string }
+        date: { type: string }
+    PickedForYouSessionSpeaker:
+      type: object
+      properties:
+        id: { type: integer }
+        speakerId: { type: string }
+        sessionId: { type: integer }
+    MatchedUser:
+      type: object
+      description: >
+        A match-maker suggestion. Carries no email: the recommender's `email` is
+        consumed here to resolve `uuid` and is not passed on.
+      required: [uuid, name, company, title, reason, tags]
+      properties:
+        uuid:
+          type: string
+          description: >
+            The attendee's idp uuid, this backend's own enrichment. An empty
+            string when the recommender named someone with no attendee row here;
+            the row is kept rather than dropped, so a client should read "" as
+            "not addressable" rather than as a missing field.
+        name: { type: string }
+        company: { type: string }
+        title: { type: string }
+        reason: { type: string, description: "Why the recommender paired the two, in its own words." }
+        tags:
+          type: array
+          nullable: true
+          items: { type: string }
+          description: >-
+            Relayed from the recommender untouched, so unlike the rest of this
+            file's collections it is null rather than [] when the recommender
+            sends none.
+        profileUrl: { type: string, description: "The attendee's stored photo. Omitted when unset." }
+    O2BarRecommendation:
+      type: object
+      description: >
+        An O2Bar engineer suggestion. Unlike MatchedUser this keeps `email` —
+        the attendee reaches the engineer directly rather than through a
+        connection request.
+      required: [uuid, name, email, reason, recommendedQuestions, availableTimeSlots]
+      properties:
+        uuid: { type: string, description: "The engineer's attendee uuid; empty when unresolved, as in MatchedUser." }
+        name: { type: string }
+        email: { type: string }
+        reason: { type: string }
+        recommendedQuestions:
+          type: array
+          nullable: true
+          items: { type: string }
+          description: >-
+            Openers the recommender suggests, written against the caller's
+            profile. Relayed untouched, so null rather than [] when it sends
+            none -- the same exception `availableTimeSlots` carries.
+        availableTimeSlots:
+          type: array
+          nullable: true
+          items: { $ref: "#/components/schemas/O2BarTimeSlot" }
+        profileUrl:
+          type: string
+          description: >
+            The recommender's own value when it supplied one, else the stored
+            attendee photo — the recommender's wins, being the fresher of the
+            two. Omitted when neither has one. Note this is the opposite of the
+            always-present-and-nullable link fields on PickedForYouSession.
+    O2BarTimeSlot:
+      type: object
+      description: >
+        ISO-8601 instants, relayed from the recommender verbatim. It builds them
+        with datetime.isoformat() over slots an admin entered as text, so unlike
+        the rest of this file's timestamps their offset is only as reliable as
+        that entry was — a slot stored without one is emitted without one.
+      required: [startTime, endTime]
+      properties:
+        startTime: { type: string }
+        endTime: { type: string }
+    O2BarRecommendationInput:
+      type: object
+      properties:
+        question:
+          type: string
+          description: >
+            What the attendee typed. Omit it to rank against the stored profile
+            alone, exactly as the GET does; the enclosing body is required
+            either way, so `{}` is how you send no question.
+    Activity:
+      type: object
+      required: [id, name, startTime, endTime]
+      properties:
+        id: { type: string, format: uuid, description: "The con_activity_hours row's id, so sittings that share a name stay distinct." }
+        name: { type: string, description: "con_activities.name; the client groups occurrences by it." }
+        description:
+          type: string
+          description: >
+            con_activities.description. Omitted when the activity has nothing to
+            say beyond its name and time.
+            Sanitized rich-text HTML on the same allowlist as Session.title (see
+            the convention at the top of this file): upstream sanitizes it as
+            rich text for parity with a session's description, since these
+            amenities were sessions of kind='activity' before migration 029 split
+            them out. In practice every value is plain text today, because the
+            admin Activities page edits it in a plain text field rather than the
+            Quill editor sessions use -- but that is a property of the current
+            admin UI, not of the API, and a client that assumes plain text will
+            break the day upstream swaps the control.
+        startTime: { type: string, format: date-time }
+        endTime: { type: string, format: date-time }
+        location:
+          type: object
+          description: >
+            The conference's venue, from conference_config.venue_name /
+            venue_address (upstream migration 018) — the same for every activity,
+            since con_activities models no location of its own: an amenity's
+            place is "at the venue", and the tables record what is open when, not
+            where. Omitted entirely when venue_name is unset (its default),
+            rather than sent as an object with an empty name.
+          required: [name]
+          properties:
+            name: { type: string, description: "From conference_config.venue_name; the location object is absent when this is unset." }
+            address: { type: string, description: "From conference_config.venue_address; omitted when unset." }
+            floorPlanUrl: { type: string, description: "Never sent — nothing upstream models a floor plan. Retained because the client optional-chains it." }
+    ShopItem:
+      type: object
+      required: [id, name, description, price, imageUrl, availableStock, category, visibility]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        price: { type: number, description: "In O2C, stored as DECIMAL(10,4)." }
+        imageUrl: { type: string }
+        availableStock: { type: integer }
+        maxPerUser:
+          type: integer
+          description: >
+            Omitted when the item has no per-attendee cap. Enforced server-side at
+            checkout against the caller's non-FAILED, non-EXPIRED orders.
+        category: { type: string }
+        visibility: { type: string, enum: [VISIBLE, HIDDEN, DELETED] }
+    ShopCatalog:
+      type: object
+      required: [items, isShopOpen, activeEventId]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/ShopItem" } }
+        isShopOpen:
+          type: boolean
+          description: "False once conference_config.shop_closing_time has passed. A NULL closing time never closes."
+        activeEventId: { type: string, format: uuid }
+    ShopOrderLine:
+      type: object
+      description: >
+        Item identity and unit price are each emitted under two names because the
+        client reads `itemId || id` and `priceAtPurchase || price`. Both price
+        fields carry the unit_price frozen at checkout, never the current price.
+      required: [itemId, id, name, quantity, price, priceAtPurchase]
+      properties:
+        itemId: { type: string }
+        id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        imageUrl: { type: string }
+        category: { type: string }
+        quantity: { type: integer }
+        price: { type: number }
+        priceAtPurchase: { type: number }
+    ShopOrder:
+      type: object
+      required: [orderId, status, items, total, date]
+      properties:
+        orderId: { type: string, description: "\"ORD-\" + a UUIDv4, generated server-side." }
+        eventId: { type: string, format: uuid }
+        status: { type: string, enum: [PENDING, CONFIRMED, FULFILLED, EXPIRED, FAILED] }
+        items: { type: array, items: { $ref: "#/components/schemas/ShopOrderLine" } }
+        total: { type: number }
+        date: { type: string, format: date-time }
+        txHash: { type: string }
+        shippingRecipientName: { type: string }
+        shippingEmail: { type: string }
+        shippingAddressLine1: { type: string }
+        shippingAddressLine2: { type: string }
+        shippingCity: { type: string }
+        shippingState: { type: string }
+        shippingPostalCode: { type: string }
+        shippingCountry: { type: string }
+    CheckoutRequest:
+      type: object
+      required: [items, shippingRecipientName, shippingEmail, shippingAddressLine1, shippingCity, shippingCountry]
+      properties:
+        idempotencyKey:
+          type: string
+          description: "Replaying one returns the original order rather than creating a second."
+        eventId: { type: string, description: "Accepted and ignored; the event is resolved server-side." }
+        totalCost: { type: number, description: "Accepted and ignored; the total is recomputed from live prices." }
+        items:
+          type: array
+          maxItems: 50
+          items:
+            type: object
+            required: [id, quantity]
+            properties:
+              id: { type: string }
+              quantity: { type: integer, minimum: 1, maximum: 1000 }
+        shippingRecipientName: { type: string, maxLength: 255 }
+        shippingEmail: { type: string, maxLength: 255 }
+        shippingAddressLine1: { type: string, maxLength: 255 }
+        shippingAddressLine2: { type: string, maxLength: 255 }
+        shippingCity: { type: string, maxLength: 255 }
+        shippingState: { type: string, maxLength: 255 }
+        shippingPostalCode: { type: string, maxLength: 255 }
+        shippingCountry: { type: string, maxLength: 255 }
+    CheckoutResponse:
+      type: object
+      required: [orderId, transactionHash]
+      properties:
+        orderId: { type: string }
+        transactionHash:
+          type: string
+          nullable: true
+          description: "An explicit null from checkout; populated by confirm."
+    CheckoutStockError:
+      type: object
+      required: [message]
+      properties:
+        message: { type: string }
+        itemId: { type: string, description: "The offending cart line, when one item is at fault." }
+        availableQuantity:
+          type: integer
+          description: >
+            How many the caller may still buy -- remaining stock, or remaining
+            per-user allowance. Absent when the item is not purchasable at all, so
+            the client does not mistake it for a sold-out line.
+    AIFeatureStatus:
+      type: object
+      description: >
+        Advisory flags for the client's own UI. Nothing on the server reads
+        them, so a false flag hides a feature rather than disabling it.
+      required: [enabledChatAssistant, enabledPersonalizedAgenda, enabledMatchMaker, enabledO2Bar]
+      properties:
+        enabledChatAssistant: { type: boolean, description: "Governs POST /assistant/chat." }
+        enabledPersonalizedAgenda: { type: boolean, description: "Governs GET /agenda/recommendations and POST /users/profile." }
+        enabledMatchMaker: { type: boolean, description: "Governs GET /users/me/matches." }
+        enabledO2Bar: { type: boolean, description: "Governs both /o2bar/recommendations verbs." }
+    PersonalizedProfileRequest:
+      type: object
+      description: >
+        Every other field is relayed as sent — this backend validates none of
+        them, and the AI service requires only a usable `email`, trimming the
+        rest rather than refusing it. `email` is the exception: it is replaced
+        with the caller's JWT email, so it need not be sent.
+      properties:
+        name: { type: string }
+        email:
+          type: string
+          description: >
+            Ignored. This backend overwrites it with the caller's JWT email
+            before relaying, so sending another attendee's address neither
+            targets nor rejects -- it is silently replaced (a mismatch is logged).
+            Kept in the schema because the relayed upstream payload requires the
+            key.
+        company: { type: string }
+        title: { type: string }
+        country: { type: string }
+        linkedInInfo:
+          type: string
+          description: >
+            Free text harvested from the attendee's LinkedIn, not a URL — it is
+            the bulk of what the recommenders reason over, so a profile seeded
+            without it produces thin matches. Note the casing: `linkedInInfo`,
+            capital I in "In".
+    PersonalizedProfileResponse:
+      type: object
+      description: >
+        The AI service's own response, relayed untouched. Documented here
+        because a client sees it, not because this backend builds it.
+      required: [email, created, message]
+      properties:
+        id:
+          type: string
+          description: >
+            The stored profile's id, and it changes on every re-post — the
+            override this backend sends is a delete-then-insert, so the id is
+            the new row's, not a stable handle on the attendee.
+        email: { type: string }
+        name: { type: string }
+        company: { type: string }
+        title: { type: string }
+        created: { type: boolean, description: "Always true through this route; see the override note on the operation." }
+        message: { type: string, description: "Human-readable, and the only field that says which path the AI service took." }
+    ChatRequest:
+      type: object
+      required: [question]
+      properties:
+        question:
+          type: string
+          description: >
+            This turn's question. Neither side rejects an empty one — the
+            assistant answers from `history` instead — and an over-long one is
+            truncated upstream rather than refused.
+        history:
+          type: array
+          items: { $ref: "#/components/schemas/ChatHistoryTurn" }
+          description: >
+            Every prior turn of this conversation, oldest first. The server
+            keeps nothing between calls, so omitting this starts a fresh
+            conversation rather than resuming the last one.
+    ChatHistoryTurn:
+      type: object
+      properties:
+        question: { type: string }
+        answer: { type: string }
+    ChatResponse:
+      type: object
+      required: [response, suggestions]
+      properties:
+        response: { type: string }
+        suggestions:
+          type: array
+          items: { type: string }
+          description: "Follow-up questions to offer as chips; empty when the assistant has none."
+    QrScanRequest:
+      type: object
+      required: [qrId]
+      properties:
+        qrId:
+          type: string
+          format: uuid
+          pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+          description: >-
+            The scanned code's id. Validated as a UUID before the query --
+            coin_allocation.qr_id is a uuid column, and a malformed value used to
+            surface as a 500.
+    CoinAllocationHistory:
+      type: object
+      required: [coinsAllocated, createdOn, transactionStatus, eventTypeName]
+      properties:
+        coinsAllocated: { type: number }
+        createdOn: { type: string, format: date-time }
+        transactionStatus:
+          type: string
+          enum: [PENDING, PROCESSING, TRANSFERRED, FAILED]
+        eventTypeName:
+          type: string
+          description: >-
+            The stored event_data label, falling back to the event type itself
+            ("SESSION", "O2BAR", "GENERAL") when the row carries none.
+    CoinAllocationSummary:
+      type: object
+      required: [totalPending, totalTransferred]
+      properties:
+        totalPending: { type: number }
+        totalTransferred: { type: number }
+    FeedbackRequest:
+      type: object
+      required: [feedbackType, rating]
+      properties:
+        feedbackType:
+          type: string
+          enum: [SESSION, EVENT]
+        sessionId:
+          type: string
+          format: uuid
+          pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+          description: >-
+            Required when feedbackType is SESSION (a 400 when absent, not a 500 as
+            before); ignored, never persisted, when feedbackType is EVENT -- an
+            EVENT row stores the current conference's id instead.
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: >-
+            Required, and there is no default: an omitted rating is a 400, not a
+            stored 0. Matches the client's 5-star widget. The feedback table has
+            no CHECK on this column, so the bound is enforced here.
+        comment: { type: string }
+    AppConfig:
+      type: object
+      description: >-
+        One app_config row, returned verbatim. `key` is opaque operational data,
+        not a field name, so it keeps its stored snake_case form (e.g.
+        `cache_version`) while the audit columns follow this file's camelCase
+        convention. Only `key` and `value` are required: the synthetic
+        `merchantWalletAddress` entry GET /app-configs appends is not a row and
+        carries nothing but zero values in the four audit columns.
+      required: [key, value]
+      properties:
+        key: { type: string }
+        value: { type: string }
+        createdBy: { type: string }
+        createdOn: { type: string, format: date-time }
+        updatedBy: { type: string }
+        updatedOn: { type: string, format: date-time }
+    ErrorResponse:
+      type: object
+      description: >-
+        The error envelope, which carries one of two keys depending on where the
+        response was produced. Handlers emit `message`. The auth middleware, which
+        guards every route in this file, aborts with `error` instead -- a missing
+        or unverifiable `x-jwt-assertion` never reaches a handler. Neither key is
+        therefore required: a given response has exactly one of them, and a client
+        must read both. `message` is not dead on the guarded routes -- a token that
+        verifies but carries no `email` claim still 401s from the handler, with
+        `message`.
+      properties:
+        message: { type: string, description: "Handler errors, including the handler-emitted 401s." }
+        error: { type: string, description: "Middleware 401s only: a missing or invalid authorization token." }
+    Favorite:
+      type: object
+      description: >-
+        A reference to a favorited session -- its id and when it was added, never
+        a snapshot of session fields. The client resolves it against live session
+        data, so a session edit shows through without re-favoriting.
+      required: [sessionId, createdAt]
+      properties:
+        sessionId: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+    FavoritesList:
+      type: object
+      description: "GET /users/me/favorites response. `items` is always an array, never null."
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Favorite" }
+    LeaderboardEntry:
+      type: object
+      description: >-
+        One leaderboard row. `userId` is the caller's real idp uuid on the
+        caller's own row and a 16-hex-character hash on every other row, so the
+        board cannot be read as a uuid directory. `firstName`/`lastName` are
+        masked to a first initial plus "***" for any attendee not opting into a
+        full name.
+      required: [userId, firstName, lastName, totalCoins]
+      properties:
+        userId: { type: string, description: "The attendee's idp uuid on the caller's own row; a 16-character hex hash on every other." }
+        firstName: { type: string, description: "Masked to a first initial plus \"***\" unless the attendee opted into a full name." }
+        lastName: { type: string, description: "Masked the same way as firstName." }
+        totalCoins: { type: number }
+    LeaderboardPreferences:
+      type: object
+      description: >-
+        The caller's leaderboard name-visibility preference. Used as both the GET
+        /leaderboard/preferences response and the PUT body and response.
+      required: [showFullName]
+      properties:
+        showFullName:
+          type: boolean
+          description: >-
+            When false, this attendee appears to others with a masked name (a
+            first initial plus "***"). Required and must be a boolean on PUT.
+    UserNotificationRequest:
+      type: object
+      description: >-
+        POST /users/notifications body. `title` is required and trimmed
+        server-side; a whitespace-only title counts as missing. Lengths are
+        measured in UTF-8 bytes, not runes, because the downstream push service
+        enforces the same byte caps to stay inside FCM's 4 KB payload limit --
+        so a non-ASCII title (Sinhala, Tamil, an emoji) fits proportionally
+        fewer characters. JSON Schema's `maxLength` counts characters and has
+        no byte-length equivalent, so the numbers below state the byte budget
+        the server actually enforces; treat them as an upper bound on
+        characters, not a promise that that many will fit.
+      required: [title]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200, description: "Trimmed server-side; at most 200 UTF-8 bytes." }
+        description: { type: string, maxLength: 1000, description: "Optional body; at most 1000 UTF-8 bytes." }
+    ConferenceQrCodesResponse:
+      type: object
+      description: >-
+        GET /qr-codes response, relayed from the external QR portal (and filtered
+        by email domain for non-admin callers). `totalCount` matches the length
+        of the returned `qrs`.
+      required: [qrs, totalCount]
+      properties:
+        qrs:
+          type: array
+          items: { $ref: "#/components/schemas/ConferenceQrCode" }
+        totalCount: { type: integer }
+    ConferenceQrCode:
+      type: object
+      required: [qrId, info, coins, createdBy, createdOn]
+      properties:
+        qrId: { type: string }
+        info: { $ref: "#/components/schemas/QrCodeInfo" }
+        description: { type: string, description: "Omitted when empty." }
+        coins: { type: number }
+        createdBy: { type: string }
+        createdOn:
+          type: string
+          description: >-
+            Relayed from the portal as a string, not normalised to this file's
+            date-time convention.
+    QrCodeInfo:
+      type: object
+      description: >-
+        Portal-supplied metadata about a QR code. Every field but `eventType` is
+        omitted when empty.
+      required: [eventType]
+      properties:
+        eventType: { type: string, enum: [SESSION, O2BAR, GENERAL, PARTNER] }
+        sessionId: { type: string }
+        email: { type: string }
+        fullName: { type: string }
+        eventTypeName: { type: string }
+        domain: { type: string }

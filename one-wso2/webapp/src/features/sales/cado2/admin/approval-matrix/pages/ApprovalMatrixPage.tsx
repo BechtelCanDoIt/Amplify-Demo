@@ -1,0 +1,604 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+import { useState, type JSX } from "react";
+import {
+  Alert,
+  Box,
+  Button,
+  Checkbox,
+  CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  FormControlLabel,
+  IconButton,
+  MenuItem,
+  Paper,
+  Stack,
+  Tab,
+  Tabs,
+  TextField,
+  Typography,
+} from "@wso2/oxygen-ui";
+import { ArrowDownIcon, HistoryIcon, LayersIcon, PlusIcon, Trash2Icon } from "@wso2/oxygen-ui-icons-react";
+import EmptyState from "@features/sales/cado2/components/empty-state/EmptyState";
+import { useCado2Toast } from "@features/sales/cado2/components/toast/toastContext";
+import PageHeader from "@features/sales/cado2/components/page-header/PageHeader";
+import SectionCard from "@features/sales/cado2/components/section-card/SectionCard";
+import ErrorNotice from "@components/error-notice/ErrorNotice";
+import { problemOf } from "@features/sales/cado2/quotes/api/errors";
+import type { Issue } from "@features/sales/cado2/quotes/api/quoteTypes";
+import { useApprovalMatrix, useMatrixChanges, useSaveApprovalMatrix } from "@features/sales/cado2/approvals/api/useApprovalApi";
+import type {
+  AffectedQuote,
+  ApprovalGroup,
+  ApprovalMapping,
+  ApprovalMatrix,
+  ApprovalSettings,
+  MatchField,
+} from "@features/sales/cado2/approvals/api/approvalTypes";
+import { roleLabel } from "@features/sales/cado2/approvals/model/approvalText";
+import { BILLING_LABEL, BILLING_OPTIONS, formatDate } from "@features/sales/cado2/quotes/form/draftForm";
+
+const TABS = ["Discount groups", "Product mapping", "Commercial rules", "Change log"] as const;
+
+const MATCH_LABEL: Record<MatchField, string> = {
+  PRODUCT_ID: "A single product (Salesforce Id)",
+  CLASSIFICATION: "product_Classification__c",
+  PRODUCT_UNIT: "Product_Unit__c",
+};
+
+/**
+ * The approval matrix, as admin data:
+ * each discount group's ladder and required reviewers, which products belong
+ * to which group, and the numbers of the commercial rules. The rule types,
+ * roles and their order are fixed in code. Saving first shows which quotes in
+ * approval the change would recall; they are recalled only on confirmation
+ *.
+ */
+export default function ApprovalMatrixPage(): JSX.Element {
+  const loaded = useApprovalMatrix();
+  const save = useSaveApprovalMatrix();
+  const [tab, setTab] = useState(0);
+  const [draft, setDraft] = useState<ApprovalMatrix | null>(null);
+  const [base, setBase] = useState<ApprovalMatrix | undefined>(undefined);
+  const [impact, setImpact] = useState<readonly AffectedQuote[] | null>(null);
+  const [savedNote, setSavedNote] = useState<string | null>(null);
+  const notify = useCado2Toast();
+
+  // Start editing from the loaded matrix, and again after a save reloads it.
+  if (loaded.data && loaded.data !== base) {
+    setBase(loaded.data);
+    setDraft(loaded.data);
+  }
+
+  if (loaded.isPending || !draft) {
+    return loaded.error ? (
+      <ErrorNotice error={loaded.error} onRetry={() => void loaded.refetch()} retrying={loaded.isFetching}>
+        Couldn&apos;t load the approval matrix.
+      </ErrorNotice>
+    ) : (
+      <Box sx={{ display: "flex", justifyContent: "center", p: 4 }}>
+        <CircularProgress aria-label="Loading the approval matrix" />
+      </Box>
+    );
+  }
+
+  const dirty = JSON.stringify(draft) !== JSON.stringify(loaded.data);
+  const problems = problemOf(save.error)?.issues ?? [];
+  const update = (m: Partial<ApprovalMatrix>) => {
+    setSavedNote(null);
+    setDraft({ ...draft, ...m });
+  };
+
+  const check = () => {
+    setSavedNote(null);
+    save.mutate({ matrix: draft, confirm: false }, { onSuccess: (res) => setImpact(res.affected) });
+  };
+  const confirm = () =>
+    save.mutate(
+      { matrix: draft, confirm: true },
+      {
+        onSuccess: (res) => {
+          setImpact(null);
+          // Quotes recalled: it stays until closed, as it concerns other
+          // people's quotes; nothing affected: a toast (2026-10-13).
+          if (res.affected.length) {
+            setSavedNote(`Saved. ${res.affected.length} quote${res.affected.length === 1 ? " was" : "s were"} recalled for resubmission.`);
+          } else {
+            notify("Saved. No quote in approval was affected.");
+          }
+        },
+      },
+    );
+
+  return (
+    <Stack spacing={3} sx={{ maxWidth: 1200 }}>
+      <PageHeader
+        title="Approval Matrix"
+        actions={
+          <>
+            <Button disabled={!dirty || save.isPending} onClick={() => setDraft(loaded.data ?? null)}>
+              Discard changes
+            </Button>
+            <Button variant="contained" size="large" disabled={!dirty || save.isPending} onClick={check}>
+              {save.isPending && !impact ? "Checking…" : "Save changes"}
+            </Button>
+          </>
+        }
+      />
+      {savedNote ? (
+        <Alert severity="success" onClose={() => setSavedNote(null)}>
+          {savedNote}
+        </Alert>
+      ) : null}
+      {problems.length ? <ProblemList issues={problems} matrix={draft} /> : null}
+      {save.error && !problems.length ? <ErrorNotice error={save.error}>Couldn&apos;t save the matrix.</ErrorNotice> : null}
+
+      <Box sx={{ borderBottom: 1, borderColor: "divider" }}>
+        <Tabs value={tab} onChange={(_, t: number) => setTab(t)} aria-label="Approval matrix sections">
+          {TABS.map((t) => (
+            <Tab key={t} label={t} />
+          ))}
+        </Tabs>
+      </Box>
+      <Box role="tabpanel" aria-label={TABS[tab]}>
+        {tab === 0 ? <GroupsEditor matrix={draft} onChange={(groups) => update({ groups })} /> : null}
+        {tab === 1 ? <MappingsEditor matrix={draft} onChange={(mappings) => update({ mappings })} /> : null}
+        {tab === 2 ? <SettingsEditor settings={draft.settings} onChange={(settings) => update({ settings })} /> : null}
+        {tab === 3 ? <ChangeLog /> : null}
+      </Box>
+
+      <Dialog open={impact !== null} onClose={() => !save.isPending && setImpact(null)} fullWidth maxWidth="sm">
+        <DialogTitle>Save the approval matrix?</DialogTitle>
+        <DialogContent>
+          {impact?.length ? (
+            <Stack spacing={1.5}>
+              <Typography variant="body2">
+                This change alters the approvals of {impact.length} quote{impact.length === 1 ? "" : "s"} in approval.
+                {impact.length === 1 ? " It" : " They"} will be recalled, and the owner{impact.length === 1 ? "" : "s"} must
+                resubmit under the new matrix.
+              </Typography>
+              <Box component="ul" sx={{ m: 0, pl: 2.5 }}>
+                {impact.map((q) => (
+                  // Plain text: the admin panel gives no access to quotes themselves.
+                  <li key={q.quoteId}>
+                    <strong>{q.quoteNumber}</strong> · version {q.versionNumber}
+                  </li>
+                ))}
+              </Box>
+            </Stack>
+          ) : (
+            <Typography variant="body2">No quote in approval is affected. New submissions use the new matrix.</Typography>
+          )}
+          {save.error ? <ErrorNotice error={save.error}>That didn&apos;t work.</ErrorNotice> : null}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setImpact(null)} disabled={save.isPending}>
+            Cancel
+          </Button>
+          {/* Red when it recalls other people's quotes (2026-10-13). */}
+          <Button variant="contained" color={impact?.length ? "error" : "primary"} onClick={confirm} disabled={save.isPending}>
+            {save.isPending ? "Saving…" : impact?.length ? "Save and recall" : "Save"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </Stack>
+  );
+}
+
+/** Refusals, with the group or row they concern. */
+function ProblemList({ issues, matrix }: { issues: readonly Issue[]; matrix: ApprovalMatrix }): JSX.Element {
+  const where = (field: string) => {
+    const g = /^groups\[(\d+)\]/.exec(field);
+    if (g) return matrix.groups[Number(g[1])]?.name || `Group ${Number(g[1]) + 1}`;
+    const m = /^mappings\[(\d+)\]/.exec(field);
+    if (m) return `Product mapping row ${Number(m[1]) + 1}`;
+    if (field.startsWith("settings.")) return "Commercial rules";
+    return "";
+  };
+  return (
+    <Alert severity="error">
+      The matrix wasn&apos;t saved:
+      <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 2.5 }}>
+        {issues.map((i) => (
+          <li key={i.field}>
+            {where(i.field) ? <strong>{where(i.field)}: </strong> : null}
+            {i.message}
+          </li>
+        ))}
+      </Box>
+    </Alert>
+  );
+}
+
+// --- Discount groups ---------------------------------------------------------
+
+function GroupsEditor({ matrix, onChange }: { matrix: ApprovalMatrix; onChange: (g: ApprovalGroup[]) => void }): JSX.Element {
+  const ladderRoles = matrix.roles.filter((r) => r.ladder);
+  const reviewerRoles = matrix.roles.filter((r) => r.reviewer);
+  const set = (i: number, g: ApprovalGroup) => onChange(matrix.groups.map((x, j) => (j === i ? g : x)));
+  const mapped = (code: string) => matrix.mappings.filter((m) => m.groupCode === code).length;
+
+  return (
+    <Stack spacing={2.5}>
+      <Typography variant="body2" color="text.secondary">
+        Each line&apos;s discretionary discount climbs its group&apos;s ladder: every approver up to the first whose limit
+        covers it signs, in order (&ldquo;up to&rdquo; includes the limit). The Account Manager&apos;s limit is their own
+        authority: they approve by submitting.
+      </Typography>
+      {matrix.groups.map((g, i) => (
+        <SectionCard
+          key={i}
+          title={g.name || "New group"}
+          icon={<LayersIcon size={18} />}
+          aside={
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Typography variant="caption" color="text.secondary">
+                {mapped(g.code)} mapping{mapped(g.code) === 1 ? "" : "s"}
+              </Typography>
+              {/* The hint sits on a wrapper: a disabled button shows no hint of its own (2026-10-13). */}
+              <Box component="span" title={mapped(g.code) > 0 ? "Move its product mappings first" : "Remove the group"}>
+                <IconButton
+                  aria-label={`Remove ${g.name || "group"}`}
+                  size="small"
+                  disabled={mapped(g.code) > 0}
+                  onClick={() => onChange(matrix.groups.filter((_, j) => j !== i))}
+                >
+                  <Trash2Icon size={16} />
+                </IconButton>
+              </Box>
+            </Stack>
+          }
+        >
+          <Stack spacing={2}>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+              <TextField label="Name" value={g.name} onChange={(e) => set(i, { ...g, name: e.target.value })} fullWidth />
+              <TextField
+                label="Code"
+                value={g.code}
+                onChange={(e) => set(i, { ...g, code: e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, "") })}
+                helperText="Stable key, e.g. PLATFORM"
+                sx={{ minWidth: 220 }}
+                disabled={mapped(g.code) > 0}
+              />
+            </Stack>
+            <Box>
+              <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1 }}>
+                Ladder
+              </Typography>
+              <Stack spacing={1}>
+                {g.ladder.map((t, j) => {
+                  const last = j === g.ladder.length - 1;
+                  const setRung = (patch: Partial<typeof t>) =>
+                    set(i, { ...g, ladder: g.ladder.map((x, k) => (k === j ? { ...x, ...patch } : x)) });
+                  return (
+                    <Stack key={j} direction="row" spacing={1.5} alignItems="center">
+                      <TextField
+                        select
+                        size="small"
+                        label="Approver"
+                        value={t.role}
+                        onChange={(e) => setRung({ role: e.target.value })}
+                        sx={{ width: 220 }}
+                      >
+                        {ladderRoles.map((r) => (
+                          <MenuItem key={r.code} value={r.code}>
+                            {r.label}
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                      <TextField
+                        size="small"
+                        label={last ? "Approves everything above" : "Approves up to (%)"}
+                        value={last ? "" : (t.maxPercent ?? "")}
+                        placeholder={last ? "no limit" : ""}
+                        disabled={last}
+                        onChange={(e) => setRung({ maxPercent: e.target.value })}
+                        slotProps={{ htmlInput: { inputMode: "decimal", "aria-label": `${roleLabel(t.role)} limit` } }}
+                        sx={{ width: 200 }}
+                      />
+                      <IconButton
+                        aria-label={`Remove ${roleLabel(t.role)} from the ladder`}
+                        size="small"
+                        disabled={g.ladder.length <= 1}
+                        onClick={() => {
+                          const ladder = g.ladder.filter((_, k) => k !== j);
+                          // The last rung always approves everything above.
+                          set(i, { ...g, ladder: ladder.map((x, k) => (k === ladder.length - 1 ? { ...x, maxPercent: null } : x)) });
+                        }}
+                      >
+                        <Trash2Icon size={16} />
+                      </IconButton>
+                    </Stack>
+                  );
+                })}
+                <Box>
+                  <Button
+                    size="small"
+                    startIcon={<PlusIcon size={14} />}
+                    onClick={() => {
+                      const ladder = g.ladder.map((x, k) => (k === g.ladder.length - 1 ? { ...x, maxPercent: x.maxPercent ?? "" } : x));
+                      set(i, { ...g, ladder: [...ladder, { role: ladderRoles.at(-1)?.code ?? "CFO", maxPercent: null }] });
+                    }}
+                  >
+                    Add an approver
+                  </Button>
+                </Box>
+              </Stack>
+            </Box>
+            <Box>
+              <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                Always Reviews Every Line
+              </Typography>
+              <Stack direction="row" sx={{ flexWrap: "wrap" }}>
+                {reviewerRoles.map((r) => (
+                  <FormControlLabel
+                    key={r.code}
+                    control={
+                      <Checkbox
+                        checked={g.reviewers.includes(r.code)}
+                        onChange={(_, on) =>
+                          set(i, { ...g, reviewers: on ? [...g.reviewers, r.code] : g.reviewers.filter((x) => x !== r.code) })
+                        }
+                      />
+                    }
+                    label={r.label}
+                  />
+                ))}
+              </Stack>
+            </Box>
+          </Stack>
+        </SectionCard>
+      ))}
+      <Box>
+        <Button
+          startIcon={<PlusIcon size={16} />}
+          onClick={() =>
+            onChange([
+              ...matrix.groups,
+              {
+                code: "",
+                name: "",
+                reviewers: [],
+                ladder: [
+                  { role: "ACCOUNT_MANAGER", maxPercent: "5" },
+                  { role: "REGIONAL_DIRECTOR", maxPercent: "10" },
+                  { role: "CFO", maxPercent: null },
+                ],
+              },
+            ])
+          }
+        >
+          Add a discount group
+        </Button>
+      </Box>
+    </Stack>
+  );
+}
+
+// --- Product mapping ---------------------------------------------------------
+
+function MappingsEditor({ matrix, onChange }: { matrix: ApprovalMatrix; onChange: (m: ApprovalMapping[]) => void }): JSX.Element {
+  const set = (i: number, m: ApprovalMapping) => onChange(matrix.mappings.map((x, j) => (j === i ? m : x)));
+  return (
+    <Stack spacing={2}>
+      <Typography variant="body2" color="text.secondary">
+        Puts Salesforce products into a discount group. When a product matches more than one row, the most specific wins: a
+        single product, then product_Classification__c, then Product_Unit__c. A discounted product in no group can&apos;t be
+        submitted — add it here.
+      </Typography>
+      <Paper variant="outlined" sx={{ borderRadius: 2, p: 2 }}>
+        <Stack spacing={1.25}>
+          {matrix.mappings.map((m, i) => (
+            <Stack key={i} direction={{ xs: "column", md: "row" }} spacing={1.5} alignItems={{ md: "center" }}>
+              <TextField
+                select
+                size="small"
+                label="Match on"
+                value={m.field}
+                onChange={(e) => set(i, { ...m, field: e.target.value as MatchField })}
+                sx={{ width: { md: 280 } }}
+              >
+                {(Object.keys(MATCH_LABEL) as MatchField[]).map((f) => (
+                  <MenuItem key={f} value={f}>
+                    {MATCH_LABEL[f]}
+                  </MenuItem>
+                ))}
+              </TextField>
+              <TextField
+                size="small"
+                label="Value"
+                value={m.value}
+                onChange={(e) => set(i, { ...m, value: e.target.value })}
+                sx={{ flexGrow: 1 }}
+              />
+              <TextField
+                select
+                size="small"
+                label="Group"
+                value={m.groupCode}
+                onChange={(e) => set(i, { ...m, groupCode: e.target.value })}
+                sx={{ width: { md: 320 } }}
+              >
+                {matrix.groups.map((g) => (
+                  <MenuItem key={g.code || g.name} value={g.code}>
+                    {g.name || g.code}
+                  </MenuItem>
+                ))}
+              </TextField>
+              <IconButton aria-label={`Remove mapping ${m.value}`} size="small" onClick={() => onChange(matrix.mappings.filter((_, j) => j !== i))}>
+                <Trash2Icon size={16} />
+              </IconButton>
+            </Stack>
+          ))}
+          <Box>
+            <Button
+              size="small"
+              startIcon={<PlusIcon size={14} />}
+              onClick={() => onChange([...matrix.mappings, { field: "PRODUCT_UNIT", value: "", groupCode: matrix.groups[0]?.code ?? "" }])}
+            >
+              Add a mapping
+            </Button>
+          </Box>
+        </Stack>
+      </Paper>
+    </Stack>
+  );
+}
+
+// --- Commercial rules --------------------------------------------------------
+
+function SettingsEditor({ settings, onChange }: { settings: ApprovalSettings; onChange: (s: ApprovalSettings) => void }): JSX.Element {
+  const set = (patch: Partial<ApprovalSettings>) => onChange({ ...settings, ...patch });
+  const rule = (title: string, chain: string, field: JSX.Element, note?: string) => (
+    <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+      <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems={{ md: "center" }}>
+        <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+          <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+            {title}
+          </Typography>
+          <Typography variant="caption" color="text.secondary" display="block">
+            Approvers: {chain}
+          </Typography>
+          {note ? (
+            <Typography variant="caption" color="warning.main" display="block">
+              {note}
+            </Typography>
+          ) : null}
+        </Box>
+        <Box sx={{ width: { md: 240 } }}>{field}</Box>
+      </Stack>
+    </Paper>
+  );
+  const num = (label: string, value: string, on: (v: string) => void) => (
+    <TextField size="small" fullWidth label={label} value={value} onChange={(e) => on(e.target.value)} slotProps={{ htmlInput: { inputMode: "decimal" } }} />
+  );
+  return (
+    <Stack spacing={1.5}>
+      <Typography variant="body2" color="text.secondary">
+        The quote-level rules. Who approves each is fixed; the numbers are yours. Deal Desk reviews every quote first.
+      </Typography>
+      {rule("Special or changed governing terms", "Legal", <Typography variant="body2">Always</Typography>)}
+      {rule(
+        "Short-term deals",
+        "Area GM → CRO → CFO",
+        num("Under this many months", settings.shortTermMonths, (v) => set({ shortTermMonths: v })),
+      )}
+      {rule(
+        "Extended term, and SaaS multi-year",
+        "Area GM → CRO → CFO",
+        num("Over this many months", settings.longTermMonths, (v) => set({ longTermMonths: v })),
+      )}
+      {rule(
+        "SaaS products",
+        "(identifies the SaaS lines for the rule above)",
+        <TextField size="small" fullWidth label="product_Classification__c value" value={settings.saasClassification} onChange={(e) => set({ saasClassification: e.target.value })} />,
+      )}
+      {rule(
+        "Payment terms",
+        "CFO",
+        <TextField
+          size="small"
+          fullWidth
+          label="Above Net (days)"
+          value={String(settings.paymentTermsDays)}
+          onChange={(e) => set({ paymentTermsDays: Number(e.target.value.replace(/\D/g, "")) || 0 })}
+          slotProps={{ htmlInput: { inputMode: "numeric" } }}
+        />,
+      )}
+      {rule(
+        "Billing frequency",
+        "CFO",
+        <Stack>
+          {BILLING_OPTIONS.map((bf) => (
+            <FormControlLabel
+              key={bf}
+              control={
+                <Checkbox
+                  size="small"
+                  checked={settings.billingApproval.includes(bf)}
+                  onChange={(_, on) =>
+                    set({
+                      billingApproval: on
+                        ? BILLING_OPTIONS.filter((x) => x === bf || settings.billingApproval.includes(x))
+                        : settings.billingApproval.filter((x) => x !== bf),
+                    })
+                  }
+                />
+              }
+              label={<Typography variant="body2">{BILLING_LABEL[bf]}</Typography>}
+            />
+          ))}
+        </Stack>,
+        settings.billingApproval.length === 0 ? "No billing frequency needs the CFO." : undefined,
+      )}
+      {rule(
+        "Renewal downsell",
+        "RD → Area GM → CRO → Chief of Staff → CFO, then the CEO above the percentage",
+        num("CEO above (% of previous ARR)", settings.downsellCeoPercent, (v) => set({ downsellCeoPercent: v })),
+      )}
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ color: "text.secondary", pt: 1 }}>
+        <ArrowDownIcon size={14} />
+        <Typography variant="caption">Saving checks which quotes in approval the new numbers affect before anything changes.</Typography>
+      </Stack>
+    </Stack>
+  );
+}
+
+// --- Change log --------------------------------------------------------------
+
+function ChangeLog(): JSX.Element {
+  const changes = useMatrixChanges();
+  if (changes.isPending) return <CircularProgress aria-label="Loading the change log" />;
+  if (changes.error) {
+    return (
+      <ErrorNotice error={changes.error} onRetry={() => void changes.refetch()}>
+        Couldn&apos;t load the change log.
+      </ErrorNotice>
+    );
+  }
+  if (!changes.data.length) {
+    return (
+      <EmptyState compact icon={<HistoryIcon size={20} />} title="No changes yet" body="The matrix is the V1 sheet as seeded." />
+    );
+  }
+  return (
+    <Stack spacing={1.5} component="ol" sx={{ listStyle: "none", m: 0, p: 0 }}>
+      {changes.data.map((c) => (
+        <Paper component="li" key={c.id} variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+          <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+            {formatDate(c.changedAt.slice(0, 10))} · {c.changedByEmail}
+          </Typography>
+          <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 2.5 }}>
+            {c.changes.map((line) => (
+              <Typography key={line} component="li" variant="body2">
+                {line}
+              </Typography>
+            ))}
+          </Box>
+          {c.recalled.length ? (
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+              Recalled: {c.recalled.map((q) => q.quoteNumber).join(", ")}
+            </Typography>
+          ) : null}
+        </Paper>
+      ))}
+    </Stack>
+  );
+}

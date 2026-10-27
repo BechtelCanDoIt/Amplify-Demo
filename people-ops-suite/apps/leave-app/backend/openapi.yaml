@@ -1,0 +1,1106 @@
+openapi: 3.0.1
+info:
+  title: /
+  version: 1.0.0
+servers:
+- url: "{server}:{port}/"
+  variables:
+    server:
+      default: http://localhost
+    port:
+      default: "9090"
+paths:
+  /user-info:
+    get:
+      summary: Get user info with privileges.
+      operationId: getUserInfo
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserInfo'
+        "500":
+          description: InternalServerError
+  /app-configs:
+    get:
+      summary: Get application configurations.
+      operationId: getAppConfigs
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppConfig'
+        "500":
+          description: InternalServerError
+        "401":
+          description: Unauthorized
+  /leaves:
+    get:
+      summary: Get leaves for the given filters.
+      operationId: getLeaves
+      parameters:
+      - name: email
+        in: query
+        description: Email of the user to filter the leaves
+        schema:
+          type: string
+          nullable: true
+      - name: startDate
+        in: query
+        description: Start date filter
+        schema:
+          type: string
+          nullable: true
+      - name: endDate
+        in: query
+        description: End date filter
+        schema:
+          type: string
+          nullable: true
+      - name: approverEmail
+        in: query
+        description: Approver email to filter the leaves
+        schema:
+          type: string
+          nullable: true
+      - name: leaveCategory
+        in: query
+        schema:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/LeaveType'
+      - name: excludedLeaveCategory
+        in: query
+        description: Leave types to leave out
+        schema:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/LeaveType'
+      - name: statuses
+        in: query
+        description: Statuses to filter the leaves
+        schema:
+          type: array
+          items:
+            $ref: '#/components/schemas/Status'
+          default: []
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          format: int64
+          nullable: true
+      - name: offset
+        in: query
+        schema:
+          type: integer
+          format: int64
+          nullable: true
+          default: 0
+      - name: orderBy
+        in: query
+        schema:
+          nullable: true
+          allOf:
+          - $ref: '#/components/schemas/OrderBy'
+          default: ASC
+      - name: employeeStatuses
+        in: query
+        schema:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/EmployeeStatus'
+      - name: subordinatesLeaves
+        in: query
+        description: Whether to fetch the leaves of subordinates of the user.
+        schema:
+          type: boolean
+          default: false
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FetchedLeavesRecord'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+        "403":
+          description: Forbidden
+    post:
+      summary: Create a new leave.
+      operationId: postLeaves
+      parameters:
+      - name: isValidationOnlyMode
+        in: query
+        description: Whether to validate the leave or create the leave
+        schema:
+          type: boolean
+          default: false
+      requestBody:
+        description: Request payload
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LeavePayload'
+        required: true
+      responses:
+        "200":
+          description: Ok
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalculatedLeave'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+        "500":
+          description: InternalServerError
+        "403":
+          description: Forbidden
+  /leaves/on-behalf:
+    post:
+      summary: |-
+        Record leave on behalf of an employee.
+
+        For leave an employee cannot request themselves (no-pay today; the
+        allowlist is configurable). Everything downstream of the applicant email -
+        day calculation, overlap check, recipients, notification, calendar event -
+        is the same code path a self-service submission takes, so the employee and
+        the leave group see an identical notification.
+      operationId: postLeavesOnBehalf
+      parameters:
+      - name: isValidationOnlyMode
+        in: query
+        description: Whether to validate the leave or record it
+        schema:
+          type: boolean
+          default: false
+      requestBody:
+        description: Request payload
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OnBehalfLeavePayload'
+        required: true
+      responses:
+        "200":
+          description: Ok
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalculatedLeave'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+        "500":
+          description: InternalServerError
+        "403":
+          description: Forbidden
+  /leaves/{id}:
+    delete:
+      summary: Cancel a leave.
+      operationId: deleteLeavesId
+      parameters:
+      - name: id
+        in: path
+        description: Leave ID
+        required: true
+        schema:
+          type: integer
+          format: int64
+      responses:
+        "200":
+          description: Ok
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+        "403":
+          description: Forbidden
+  /employees:
+    get:
+      summary: Fetch all the employees.
+      operationId: getEmployees
+      parameters:
+      - name: location
+        in: query
+        description: Employee location
+        schema:
+          type: string
+          nullable: true
+      - name: businessUnit
+        in: query
+        description: Employee business unit
+        schema:
+          type: string
+          nullable: true
+      - name: team
+        in: query
+        description: Employee team
+        schema:
+          type: string
+          nullable: true
+      - name: unit
+        in: query
+        description: Employee unit
+        schema:
+          type: string
+          nullable: true
+      - name: employeeStatuses
+        in: query
+        description: Employee statuses to filter the employees
+        schema:
+          type: array
+          nullable: true
+          items:
+            type: string
+      - name: leadEmail
+        in: query
+        description: Manager email to filter the employees
+        schema:
+          type: string
+          nullable: true
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MinimalEmployeeInfo'
+        "500":
+          description: InternalServerError
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+  /employees/{email}:
+    get:
+      summary: Fetch an employee by email.
+      operationId: getEmployeesEmail
+      parameters:
+      - name: email
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Employee'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+  /employees/{email}/leave-entitlement:
+    get:
+      summary: Fetch legally entitled leave for the given employee.
+      operationId: getEmployeesEmailLeaveEntitlement
+      parameters:
+      - name: email
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: years
+        in: query
+        description: Years to fetch leave entitlement. Empty array will fetch leave
+          entitlement for current year
+        schema:
+          type: array
+          nullable: true
+          items:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LeaveEntitlement'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+        "403":
+          description: Forbidden
+  /user-calendar:
+    get:
+      summary: Fetch user calendar.
+      operationId: getUserCalendar
+      parameters:
+      - name: startDate
+        in: query
+        description: Start date of the calendar
+        required: true
+        schema:
+          type: string
+      - name: endDate
+        in: query
+        description: End date of the calendar
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserCalendarInformation'
+        "500":
+          description: InternalServerError
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+  /leaves/report:
+    post:
+      summary: Generate and fetch leave reports for admins and leads.
+      operationId: postLeavesReport
+      requestBody:
+        description: Request payload
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportPayload'
+        required: true
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportContent'
+        "500":
+          description: InternalServerError
+        "403":
+          description: Forbidden
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+  /leaves/{id}/{action}:
+    post:
+      summary: Approve / Reject the sabbatical leave application request.
+      operationId: postLeavesIdAction
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+      - name: action
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/Action'
+      responses:
+        "200":
+          description: Ok
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+        "403":
+          description: Forbidden
+components:
+  schemas:
+    Action:
+      type: string
+      description: APPROVE/REJECT Action enum.
+      enum:
+      - reject
+      - approve
+    AppConfig:
+      required:
+      - cachedEmails
+      - isSabbaticalLeaveEnabled
+      - onBehalfAllowedLeaveTypes
+      - sabbaticalLeaveEligibilityDuration
+      - sabbaticalLeaveMaxApplicationDuration
+      - sabbaticalLeaveMinJobBand
+      - sabbaticalLeavePolicyUrl
+      - sabbaticalLeaveUserGuideUrl
+      type: object
+      properties:
+        isSabbaticalLeaveEnabled:
+          type: boolean
+          description: Is sabbatical leave enabled or not
+        sabbaticalLeavePolicyUrl:
+          type: string
+          description: Sabbatical leave policy URL
+        sabbaticalLeaveUserGuideUrl:
+          type: string
+          description: Sabbatical leave user guide URL
+        sabbaticalLeaveEligibilityDuration:
+          type: integer
+          description: Sabbatical leave eligibility duration in days
+          format: int64
+        sabbaticalLeaveMaxApplicationDuration:
+          type: integer
+          description: Sabbatical leave maximum application duration in days
+          format: int64
+        sabbaticalLeaveMinJobBand:
+          type: integer
+          description: Minimum job band eligible for sabbatical leave
+          format: int64
+        cachedEmails:
+          $ref: '#/components/schemas/DefaultMailResponse'
+        onBehalfAllowedLeaveTypes:
+          type: array
+          description: |-
+            Leave types People Ops may record on behalf of an employee. Drives the
+            leave-type options on the admin recording screen, so widening the
+            configuration needs no UI change.
+          items:
+            $ref: '#/components/schemas/LeaveType'
+      additionalProperties: false
+      description: Application configurations.
+    BasicEmployeeInfo:
+      required:
+      - employeeThumbnail
+      - firstName
+      - lastName
+      - workEmail
+      type: object
+      properties:
+        firstName:
+          type: string
+          description: First name
+        lastName:
+          type: string
+          description: Last name
+        workEmail:
+          type: string
+          description: Work email
+        employeeThumbnail:
+          type: string
+          description: Employee thumbnail
+      additionalProperties: false
+      description: Minimal Employee information.
+    CalculatedLeave:
+      required:
+      - hasOverlap
+      - workingDays
+      type: object
+      properties:
+        workingDays:
+          type: number
+          description: Number of working days
+          format: float
+        hasOverlap:
+          type: boolean
+          description: Whether the leave has an overlap
+        message:
+          type: string
+          description: Message of the leave
+        holidays:
+          type: array
+          description: List of holidays
+          items:
+            $ref: '#/components/schemas/Holiday'
+      additionalProperties: false
+      description: Calculated leave.
+    DefaultMail:
+      required:
+      - email
+      type: object
+      properties:
+        email:
+          type: string
+          description: Email address / group to be notified
+        thumbnail:
+          type: string
+          description: Thumbnail image of the email address / group
+          default: ""
+      additionalProperties: false
+      description: Default mails to be notified when submitting a leave.
+    DefaultMailResponse:
+      required:
+      - mandatoryMails
+      - optionalMails
+      type: object
+      properties:
+        mandatoryMails:
+          type: array
+          description: Mandatory mails to be notified
+          items:
+            $ref: '#/components/schemas/DefaultMail'
+        optionalMails:
+          type: array
+          description: Optional mails to be notified
+          items:
+            $ref: '#/components/schemas/DefaultMail'
+      additionalProperties: false
+      description: Default mail response type.
+    Employee:
+      type: object
+      description: Employee.
+      allOf:
+      - $ref: '#/components/schemas/Employee'
+      - type: object
+        properties:
+          continuousServiceDate:
+            type: string
+            nullable: true
+        additionalProperties: false
+    EmployeeStatus:
+      type: string
+      description: Employee status.
+      enum:
+      - Left
+      - Active
+      - Marked leaver
+    ErrorPayload:
+      required:
+      - message
+      - method
+      - path
+      - reason
+      - status
+      - timestamp
+      type: object
+      properties:
+        timestamp:
+          type: string
+        status:
+          type: integer
+          format: int64
+        reason:
+          type: string
+        message:
+          type: string
+        path:
+          type: string
+        method:
+          type: string
+    FetchedLeavesRecord:
+      required:
+      - leaves
+      type: object
+      properties:
+        leaves:
+          type: array
+          description: List of leaves
+          items:
+            $ref: '#/components/schemas/Leave'
+      additionalProperties: false
+      description: Record for fetched leaves.
+    Holiday:
+      required:
+      - date
+      - title
+      type: object
+      properties:
+        title:
+          type: string
+          description: Title of the holiday
+        date:
+          type: string
+          description: Date of the holiday
+      additionalProperties: false
+      description: Holiday.
+    Leave:
+      required:
+      - approverEmail
+      - calendarEventId
+      - cancelComment
+      - canceledDate
+      - copyEmailList
+      - createdDate
+      - email
+      - emailId
+      - emailSubject
+      - endDate
+      - id
+      - isEndHalf
+      - isPublicComment
+      - leaveType
+      - location
+      - notifyEveryone
+      - numberOfDays
+      - periodType
+      - startDate
+      - startHalf
+      - status
+      - submitComment
+      - updatedDate
+      type: object
+      properties:
+        id:
+          type: integer
+          description: Leave ID
+          format: int64
+        email:
+          type: string
+          description: Employee email
+        leaveType:
+          type: string
+          description: Leave type
+          nullable: true
+        periodType:
+          type: string
+          description: Leave period type
+          nullable: true
+        copyEmailList:
+          type: string
+          description: Copy email list
+          nullable: true
+        notifyEveryone:
+          type: boolean
+          description: Notify everyone
+          nullable: true
+        submitComment:
+          type: string
+          description: Submit comment
+          nullable: true
+        cancelComment:
+          type: string
+          description: Cancel comment
+          nullable: true
+        createdDate:
+          type: string
+          description: Created date
+          nullable: true
+        updatedDate:
+          type: string
+          description: Updated date
+          nullable: true
+        emailId:
+          type: string
+          description: Email ID
+          nullable: true
+        emailSubject:
+          type: string
+          description: Email subject
+          nullable: true
+        startDate:
+          type: string
+          description: Leave start date
+        endDate:
+          type: string
+          description: Leave end date
+        startHalf:
+          type: integer
+          description: Leave start half
+          format: int64
+          nullable: true
+        isEndHalf:
+          type: boolean
+          description: Leave end half
+          nullable: true
+        canceledDate:
+          type: string
+          description: Leave canceled date
+          nullable: true
+        numberOfDays:
+          type: number
+          description: Leave number of days
+          format: float
+          nullable: true
+        isPublicComment:
+          type: boolean
+          description: Leave is public comment
+          nullable: true
+        calendarEventId:
+          type: string
+          description: Leave calendar event ID
+          nullable: true
+        location:
+          type: string
+          description: Employee location
+          nullable: true
+        status:
+          description: Status
+          nullable: true
+          allOf:
+          - $ref: '#/components/schemas/Status'
+        approverEmail:
+          type: string
+          description: Approver email
+          nullable: true
+      additionalProperties: false
+      description: "[Database] Leave type."
+    LeaveEntitlement:
+      required:
+      - leavePolicy
+      - location
+      - policyAdjustedLeave
+      - year
+      type: object
+      properties:
+        year:
+          type: integer
+          description: Year of the leave entitlement
+          format: int64
+        location:
+          type: string
+          description: Employee location
+          nullable: true
+        leavePolicy:
+          $ref: '#/components/schemas/LeavePolicy'
+        policyAdjustedLeave:
+          $ref: '#/components/schemas/LeavePolicy'
+        periodStart:
+          type: string
+          description: Start date of the leave period (ISO 8601)
+          nullable: true
+        periodEnd:
+          type: string
+          description: End date of the leave period (ISO 8601)
+          nullable: true
+      additionalProperties: false
+      description: Leave Entitlement.
+    LeavePayload:
+      type: object
+      description: Payload for leave creation.
+      allOf:
+      - $ref: '#/components/schemas/LeavePayload'
+      - type: object
+        properties:
+          leaveType:
+            $ref: '#/components/schemas/LeaveType'
+          emailRecipients:
+            type: array
+            items:
+              type: string
+          calendarEventId:
+            type: string
+            nullable: true
+          comment:
+            type: string
+            nullable: true
+          isPublicComment:
+            type: boolean
+          emailSubject:
+            type: string
+            nullable: true
+          isMorningLeave:
+            type: boolean
+            nullable: true
+          periodType:
+            $ref: '#/components/schemas/LeavePeriodType'
+        additionalProperties: false
+    LeavePeriodType:
+      type: string
+      description: Leave period type.
+      enum:
+      - half
+      - one
+      - multiple
+    LeavePolicy:
+      type: object
+      properties:
+        annual:
+          type: number
+          description: Annual leave count
+          format: float
+          nullable: true
+        casual:
+          type: number
+          description: Casual leave count
+          format: float
+          nullable: true
+        congesPayes:
+          type: number
+          description: "France: Congés Payés (paid annual leave) count"
+          format: float
+          nullable: true
+        rtt:
+          type: number
+          description: "France: RTT (Réduction du Temps de Travail) count"
+          format: float
+          nullable: true
+        sick:
+          type: number
+          description: Sick leave count (open/unlimited when null)
+          format: float
+          nullable: true
+      additionalProperties: false
+      description: Leave policy.
+    LeaveType:
+      type: string
+      description: Leave type.
+      enum:
+      - no-pay
+      - medical
+      - rtt
+      - conges_payes
+      - sabbatical
+      - paternity
+      - maternity
+      - lieu
+      - annual
+      - sick
+      - casual
+    MinimalEmployeeInfo:
+      type: object
+      description: Minimal Employee information.
+      allOf:
+      - $ref: '#/components/schemas/BasicEmployeeInfo'
+      - required:
+        - employeeStatus
+        type: object
+        properties:
+          employeeStatus:
+            type: string
+            description: "Status of the employee (e.g. Active, Marked leaver, Left)"
+            nullable: true
+        additionalProperties: false
+    OnBehalfLeavePayload:
+      type: object
+      description: |-
+        Payload for recording leave on behalf of another employee.
+
+        Carries the same fields as a self-service leave so the notification, calendar
+        and day-calculation paths stay identical; the only addition is the employee
+        the leave belongs to. `leaveType` is deliberately the full enum - which types
+        People Ops may actually record is gated at runtime by
+        `onBehalfAllowedLeaveTypes`.
+      allOf:
+      - $ref: '#/components/schemas/LeavePayload'
+      - required:
+        - employeeEmail
+        type: object
+        properties:
+          employeeEmail:
+            type: string
+            description: Email of the employee the leave is recorded for
+          leaveType:
+            $ref: '#/components/schemas/LeaveType'
+          emailRecipients:
+            type: array
+            items:
+              type: string
+          calendarEventId:
+            type: string
+            nullable: true
+          comment:
+            type: string
+            nullable: true
+          isPublicComment:
+            type: boolean
+          emailSubject:
+            type: string
+            nullable: true
+          isMorningLeave:
+            type: boolean
+            nullable: true
+          periodType:
+            $ref: '#/components/schemas/LeavePeriodType'
+        additionalProperties: false
+    OrderBy:
+      type: string
+      description: Order by.
+      enum:
+      - DESC
+      - ASC
+    ReportContent:
+      type: object
+      additionalProperties:
+        type: object
+        additionalProperties:
+          type: number
+          format: float
+      description: Leaves report content.
+    ReportPayload:
+      type: object
+      properties:
+        startDate:
+          type: string
+          description: Start date of the report
+          nullable: true
+        endDate:
+          type: string
+          description: End date of the report
+          nullable: true
+        location:
+          type: string
+          description: Location of employees
+          nullable: true
+        businessUnit:
+          type: string
+          description: Business unit of employees
+          nullable: true
+        department:
+          type: string
+          description: Department of employees
+          nullable: true
+        team:
+          type: string
+          description: Team of employees
+          nullable: true
+        employeeEmail:
+          type: string
+          description: Employee emails to filter by
+          nullable: true
+        employeeStatuses:
+          type: array
+          description: Employee status list
+          nullable: true
+          items:
+            $ref: '#/components/schemas/EmployeeStatus'
+        isAdminView:
+          type: boolean
+          description: Admin view or not
+      additionalProperties: false
+      description: Report generation payload.
+    Status:
+      type: string
+      description: Status of the leave.
+      enum:
+      - CANCELLED
+      - REJECTED
+      - APPROVED
+      - PENDING
+    UserCalendarInformation:
+      required:
+      - holidays
+      - leaves
+      type: object
+      properties:
+        leaves:
+          type: array
+          description: List of leaves
+          items:
+            $ref: '#/components/schemas/Leave'
+        holidays:
+          type: array
+          description: List of holidays
+          items:
+            $ref: '#/components/schemas/Holiday'
+      additionalProperties: false
+      description: User calendar content.
+    UserInfo:
+      required:
+      - employeeId
+      - employeeThumbnail
+      - employmentStartDate
+      - firstName
+      - isLead
+      - jobBand
+      - jobRole
+      - lastName
+      - leadEmail
+      - location
+      - privileges
+      - subordinateCount
+      - workEmail
+      type: object
+      properties:
+        employeeId:
+          type: string
+          description: Employee Id
+          nullable: true
+        firstName:
+          type: string
+          description: First name
+          nullable: true
+        lastName:
+          type: string
+          description: Last name
+          nullable: true
+        workEmail:
+          type: string
+          description: Work email
+          nullable: true
+        leadEmail:
+          type: string
+          description: Lead email
+          nullable: true
+        employeeThumbnail:
+          type: string
+          description: Employee thumbnail
+          nullable: true
+        jobRole:
+          type: string
+          description: Job role
+          nullable: true
+        privileges:
+          type: array
+          description: Privileges
+          items:
+            type: integer
+            format: int64
+        employmentStartDate:
+          type: string
+          description: Employment start date
+          nullable: true
+        isLead:
+          type: boolean
+          description: Is lead or not
+          nullable: true
+        subordinateCount:
+          type: integer
+          description: Subordinate count
+          format: int64
+        location:
+          type: string
+          description: Employee location/country
+          nullable: true
+        jobBand:
+          type: integer
+          description: Job band
+          format: int64
+          nullable: true
+      additionalProperties: false
+      description: User Info payload.

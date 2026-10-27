@@ -1,0 +1,194 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+package models
+
+import "time"
+
+// ConnectionState is the stored state of one connection. It is deliberately
+// not a request field: the route names the transition (request / accept /
+// delete), so there is no value a caller can set to a state they are not
+// allowed to reach. The old signed-int ConnectionStatus, which callers *did*
+// set, is what made accept-your-own-request possible.
+//
+// There is no "declined": declining, withdrawing and removing all delete the
+// row, so a refused pair returns to having no relationship at all. See
+// migrations/014_user_connection_redesign.sql.
+type ConnectionState string
+
+const (
+	ConnectionPending  ConnectionState = "pending"
+	ConnectionAccepted ConnectionState = "accepted"
+)
+
+// IsValid reports whether s is one of the defined connection states. Nothing
+// on the request path needs this -- states arrive from the database, never
+// from a payload -- but it guards against a row written by an older build or
+// by hand.
+func (s ConnectionState) IsValid() bool {
+	switch s {
+	case ConnectionPending, ConnectionAccepted:
+		return true
+	default:
+		return false
+	}
+}
+
+// String is the JSON-facing label for a connection state.
+func (s ConnectionState) String() string {
+	if !s.IsValid() {
+		return "unknown"
+	}
+	return string(s)
+}
+
+// Connection is one stored user_connection row -- one per unordered pair, not
+// one per direction. RequesterID and AddresseeID still record who started it,
+// because only the addressee may accept; the pair itself is unique regardless
+// of which of the two is which.
+type Connection struct {
+	ID          string
+	RequesterID string
+	AddresseeID string
+	State       ConnectionState
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// Other returns the id of whichever party is not callerUUID, and whether
+// callerUUID is a party to the connection at all. Handlers use it to decide
+// whose profile to enrich the response with.
+func (c Connection) Other(callerUUID string) (string, bool) {
+	switch callerUUID {
+	case c.RequesterID:
+		return c.AddresseeID, true
+	case c.AddresseeID:
+		return c.RequesterID, true
+	default:
+		return "", false
+	}
+}
+
+// CallerIdentity is every identity form one authenticated caller answers to.
+//
+// It exists because a stored connection id is not guaranteed to be in the
+// form the caller's token presents. Rows written before the identity fix key
+// a party by whatever their JWT sub happened to be -- for the Asgardeo
+// application behind the microapp, their email -- while rows written since
+// key them by attendees.idp_uuid. Matching on a single string therefore made
+// one of those two populations invisible, whichever one was chosen.
+//
+// Carrying the set instead means the reads match a party under any form they
+// have ever been stored under, so a legacy row is readable with no migration
+// having been run. Canonical is what any *new* write uses, so the set stops
+// growing.
+type CallerIdentity struct {
+	// Canonical is the caller's attendees.idp_uuid where it resolved, and
+	// their raw sub where it did not. Every write uses it and nothing else.
+	Canonical string
+
+	// Aliases is every form the caller may be stored under, Canonical
+	// included: deduplicated, never empty, and safe to pass straight to a
+	// `= ANY($1)`.
+	Aliases []string
+}
+
+// NewCallerIdentity builds the set from the canonical id plus whatever other
+// forms the token carried, dropping blanks and duplicates. Canonical is
+// always first, so a reader of the slice sees the authoritative id up front.
+func NewCallerIdentity(canonical string, others ...string) CallerIdentity {
+	aliases := make([]string, 0, len(others)+1)
+	seen := make(map[string]struct{}, len(others)+1)
+	for _, id := range append([]string{canonical}, others...) {
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		aliases = append(aliases, id)
+	}
+	return CallerIdentity{Canonical: canonical, Aliases: aliases}
+}
+
+// Matches reports whether a stored party id names this caller, under any
+// form. Used to bucket a row as sent rather than received, and to tell a
+// caller who is party to a connection from one who is not.
+func (c CallerIdentity) Matches(partyID string) bool {
+	for _, alias := range c.Aliases {
+		if alias == partyID {
+			return true
+		}
+	}
+	return false
+}
+
+// OtherFor returns the id of whichever party is not the caller, under any of
+// the caller's identity forms, and whether the caller is a party at all.
+//
+// The id it returns is whatever the row stores, which for a legacy row may
+// itself be an email rather than a uuid; callers that need a uuid (a push
+// recipient, a profile lookup) resolve it.
+func (c Connection) OtherFor(caller CallerIdentity) (string, bool) {
+	switch {
+	case caller.Matches(c.RequesterID):
+		return c.AddresseeID, true
+	case caller.Matches(c.AddresseeID):
+		return c.RequesterID, true
+	default:
+		return "", false
+	}
+}
+
+// ConnectionUserInfo describes the other party in a connection, enriched from
+// that user's attendee profile.
+//
+// ConnectionID is the row's own id, and it is what the accept and delete
+// routes address -- without it a client holding a GET response has no way to
+// name the connection it wants to act on. Status is the explicit state,
+// always present so the client reads it directly rather than inferring it
+// from which array the item sits in.
+type ConnectionUserInfo struct {
+	ConnectionID string `json:"connectionId"`
+	UserID       string `json:"userId"`
+	Name         string `json:"name"`
+	// Email is present only on an accepted connection, and omitted entirely
+	// while a request is still pending. Exchanging contact details is what
+	// accepting *is*, so handing the address over at request time gave it away
+	// before the other person had agreed to anything -- and it did so in both
+	// directions, since a pending row appears in the sender's requestsSent as
+	// well as the recipient's requestsReceived.
+	Email      string `json:"email,omitempty"`
+	Status     string `json:"status"`
+	ProfileURL string `json:"profileUrl,omitempty"`
+	Title      string `json:"title,omitempty"`
+	Company    string `json:"company,omitempty"`
+	Country    string `json:"country,omitempty"`
+}
+
+// UserConnectionsInfo is the response shape for GET /users/me/connections.
+type UserConnectionsInfo struct {
+	RequestsSent     []ConnectionUserInfo `json:"requestsSent"`
+	RequestsReceived []ConnectionUserInfo `json:"requestsReceived"`
+	Connections      []ConnectionUserInfo `json:"connections"`
+}
+
+// ConnectionRequest is the payload for POST /users/me/connections. targetId is
+// the only id ever taken from a body; the requester is always the JWT sub.
+type ConnectionRequest struct {
+	TargetID string `json:"targetId" binding:"required"`
+}

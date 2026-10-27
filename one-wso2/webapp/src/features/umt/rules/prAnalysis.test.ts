@@ -1,0 +1,59 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied. See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+// PR Analysis input rules.
+
+import { describe, expect, it } from "vitest";
+import { GITHUB_PR_REGEX, isPrAnalyzeDisabled, jarNameError, jarVersionError } from "../lib/umtPrAnalysis";
+
+describe("PR URL", () => {
+  it("accepts a GitHub pull request and rejects issues and other hosts", () => {
+    expect(GITHUB_PR_REGEX.test("https://github.com/wso2/carbon-kernel/pull/12")).toBe(true);
+    expect(GITHUB_PR_REGEX.test("https://github.com/wso2/carbon-kernel/issues/12")).toBe(false);
+    expect(GITHUB_PR_REGEX.test("https://gitlab.com/wso2/carbon-kernel/pull/12")).toBe(false);
+  });
+});
+
+describe("Analyze button", () => {
+  it("is disabled while an analysis is queued or running", () => {
+    for (const status of ["QUEUED", "PROCESSING"]) {
+      expect(
+        isPrAnalyzeDisabled({
+          status,
+          hasNewInputsSinceLastAnalysis: true,
+          updateType: "generalUpdate",
+          pullRequestCount: 1,
+          manualFileCount: 0,
+        }),
+      ).toBe(true);
+    }
+  });
+});
+
+describe("Bundle info JAR name", () => {
+  it("rejects a name carrying the version or a .jar suffix", () => {
+    expect(jarNameError("org.foo_1.2.0", "1.2.0")).toBeDefined();
+    expect(jarNameError("org.foo.jar", "1.2.0")).toBeDefined();
+    expect(jarNameError("org.foo", "1.2.0")).toBeUndefined();
+  });
+
+  // A JAR version can't be empty.
+  it("requires a JAR version", () => {
+    expect(jarVersionError("")).toBeDefined();
+    expect(jarVersionError("   ")).toBeDefined();
+    expect(jarVersionError("1.0.0")).toBeUndefined();
+  });
+});

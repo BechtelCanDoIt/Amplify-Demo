@@ -1,0 +1,5 @@
+target/
+Config.toml
+# Test configs only, not the actual config used in production.
+!tests/Config.toml
+!modules/*/tests/Config.toml

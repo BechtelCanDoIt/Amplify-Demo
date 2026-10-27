@@ -1,0 +1,26 @@
+[people_scheduler.database.dbConfig]
+host = ""
+user = ""
+password = ""
+database = ""
+port = 0
+maxOpenConnections = 10
+maxConnectionLifeTime = 180.0
+minIdleConnections = 5
+
+[people_scheduler.email]
+appName = ""
+
+[people_scheduler.email.emailServiceConfig]
+emailServiceEndpoint = ""
+# Each job names its own recipients: the summaries answer to different people, so
+# neither inherits an audience that was chosen for the other.
+leaverTransitionRecipients = [""]
+scheduledChangeRecipients = [""]
+joinerActivationRecipients = [""]
+from = ""
+
+[people_scheduler.email.emailServiceConfig.oauthConfig]
+tokenUrl = ""
+clientId = ""
+clientSecret = ""

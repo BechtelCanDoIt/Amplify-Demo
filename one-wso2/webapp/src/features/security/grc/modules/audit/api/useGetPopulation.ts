@@ -1,0 +1,93 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+import { useQuery } from "@tanstack/react-query";
+import { useAuthApiClient } from "@features/security/grc/shim/useAuthApiClient";
+import { BACKEND_BASE_URL } from "@features/security/grc/shim/apiConfig";
+import { extractErrorMessage } from "@features/security/grc/modules/audit/api/apiError";
+import type { RoundStatus } from "@features/security/grc/modules/audit/types/audit";
+
+export interface PopulationFile {
+  id: number;
+  populationId: number;
+  fileKind: "POPULATION" | "SAMPLE";
+  fileName: string;
+  filePath: string;
+  fileType: string | null;
+  fileSize: number | null;
+  // Raw uuid of whoever uploaded the file (the team for POPULATION, the
+  // auditor for SAMPLE), and that uuid resolved to a display name by the
+  // backend — see PopulationFileList, which shows the attribution header.
+  createdBy: string;
+  createdByName: string;
+  createdAt: string;
+  readUrl: string | null;
+}
+
+export interface PopulationRound {
+  id: number;
+  controlId: number;
+  status: RoundStatus;
+  referenceNumber: number | null;
+  description: string | null;
+  dueDate: string | null;
+  comments: string | null;
+  // Written note standing in for population files (a fileless submit, or a
+  // note alongside them) — null for an ordinary round.
+  attestation: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// A round before the current one, with the team's files on it. A rejected
+// round is followed by a new one when the team resubmits, so the rejected one
+// stays here as history (and is left out entirely for an external auditor).
+export interface EarlierPopulationRound {
+  round: PopulationRound;
+  populationFiles: PopulationFile[];
+}
+
+export interface PopulationView {
+  round: PopulationRound;
+  populationFiles: PopulationFile[];
+  sampleFiles: PopulationFile[];
+  sampleReference: string | null;
+  // Optional only so a response from a backend that predates round history
+  // still parses; see populationRounds.
+  earlierRounds?: EarlierPopulationRound[];
+}
+
+export const populationQueryKey = (auditId: number, controlId: number) =>
+  ["audit", "population", auditId, controlId] as const;
+
+/** Fetches the control's current population round (its files split population/sample, and the auditor's sample note) plus the rounds before it. */
+export function useGetPopulation(auditId: number, controlId: number, enabled: boolean) {
+  const authFetch = useAuthApiClient();
+
+  return useQuery({
+    queryKey: populationQueryKey(auditId, controlId),
+    enabled,
+    queryFn: async (): Promise<PopulationView> => {
+      const res = await authFetch(
+        `${BACKEND_BASE_URL}/api/v1/audits/${auditId}/controls/${controlId}/population`,
+      );
+      if (!res.ok) {
+        throw new Error(await extractErrorMessage(res, `Failed to load population (${res.status})`));
+      }
+      return res.json() as Promise<PopulationView>;
+    },
+  });
+}

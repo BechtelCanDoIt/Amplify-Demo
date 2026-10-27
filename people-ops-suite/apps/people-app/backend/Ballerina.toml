@@ -1,0 +1,8 @@
+[package]
+org = "wso2_open_operations"
+name = "people"
+version = "1.5.0"
+distribution = "2201.12.7"
+
+[build-options]
+observabilityIncluded = true
