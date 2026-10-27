@@ -15,9 +15,9 @@
 # under the License.
 
 # Amplify demo: every Amplify component in ONE image, for a single Choreo component.
-# Docker context: marketing-tools (repo root), so Choreo's build context needs
-#   Dockerfile path: demo-docker/Dockerfile      Docker context: .
-#   docker build -f demo-docker/Dockerfile -t amplify-demo .
+# Docker context: the repository root (Amplify-Demo), so Choreo needs
+#   Dockerfile path: marketing-tools/demo-docker/Dockerfile   Docker context: .
+#   docker build -f marketing-tools/demo-docker/Dockerfile -t amplify-demo .
 # Inside the container (entrypoint.sh starts them in this order):
 #   1. amplify-database  one-shot, migrations then seeds, must exit 0 or the container stops (skip: RUN_MIGRATIONS=false)
 #   2. scheduler         127.0.0.1:8080   (akorn/scheduler, needs DSN)
@@ -32,7 +32,7 @@
 
 FROM ballerina/ballerina:2201.13.3@sha256:7cba1a3bcb3314e2444aa6823d332e79882437df512de71037c4b0607d39e019 AS build
 WORKDIR /home/ballerina
-ARG A=apps/amplify
+ARG A=marketing-tools/apps/amplify
 # Shared packages go into this stage's own local repository (ADR-020/021).
 COPY --chown=ballerina ${A}/amplify-common amplify-common
 RUN cd amplify-common && bal pack && bal push --repository=local
@@ -58,8 +58,8 @@ COPY --from=build /home/ballerina/amplify-jobs/target/bin/amplify_jobs.jar jobs.
 COPY --from=build /home/ballerina/amplify-database/target/bin/amplify_database.jar migrate.jar
 COPY --from=build --chown=10014:10014 /home/ballerina/amplify-database/migrations migrations
 COPY --from=build --chown=10014:10014 /home/ballerina/amplify-database/seed seed
-COPY --chown=10014:10014 apps/amplify/amplify-scheduler/history-retention.sql history-retention.sql
-COPY --chmod=0555 demo-docker/entrypoint.sh entrypoint.sh
+COPY --chown=10014:10014 marketing-tools/apps/amplify/amplify-scheduler/history-retention.sql history-retention.sql
+COPY --chmod=0555 marketing-tools/demo-docker/entrypoint.sh entrypoint.sh
 # Choreo requires a numeric non-root UID (10000-20000).
 USER 10014
 EXPOSE 9090

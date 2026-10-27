@@ -15,7 +15,7 @@
 # under the License.
 
 # Amplify demo (all components in one image). Choreo Service, Dockerfile buildpack.
-# Docker context: . (marketing-tools)  |  Dockerfile: demo-docker/Dockerfile
+# Docker context: . (repo root)  |  Dockerfile: marketing-tools/demo-docker/Dockerfile
 # Choreo reads this file from <docker context>/.choreo/component.yaml.
 # Only amplify-api (9090) is exposed; scheduler and jobs stay inside the container (loopback, no connections).
 # LinkedIn is the real one: no mock, no base-URL overrides.
@@ -31,7 +31,7 @@ endpoints:
     type: REST
     networkVisibilities:
       - Public
-    schemaFilePath: apps/amplify/amplify-api/openapi.yaml
+    schemaFilePath: marketing-tools/apps/amplify/amplify-api/openapi.yaml
 configurations:
   env:
     # --- Run switch ---

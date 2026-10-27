@@ -2,4 +2,7 @@
 **/generated
 **/Config.toml
 .git
-apps/amplify/local
+marketing-tools/apps/amplify/local
+one-wso2
+people-ops-suite
+wso2-digital-agents
